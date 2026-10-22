@@ -62,6 +62,25 @@ class DataManager:
             results_path = DEV_DIR / "results.json"
             dataset_path = DEV_DIR / "dev_dataset_50k.csv"
 
+            if not results_path.exists() or not dataset_path.exists():
+                print(f"[BATMAN INFO] No bundled dataset found at {DEV_DIR}. Initializing DataManager in empty state.")
+                self._overview = OverviewStats(
+                    total_transactions=0,
+                    total_wallets=0,
+                    total_ips=0,
+                    anomalous_entities=0,
+                    high_risk_entities=0,
+                    critical_alerts=0
+                )
+                self._alerts = []
+                self._transactions = []
+                self._graph = GraphData(nodes=[], edges=[])
+                self._scoreboard = {}
+                self._raw_results = {}
+                self._entity_ids = []
+                self._loaded = True
+                return
+
             # 1. Load results.json (Wallet-level analytics)
             with open(results_path, "r", encoding="utf-8") as f:
                 results_data = json.load(f)
@@ -310,3 +329,10 @@ class DataManager:
         if not self._loaded:
             self.load_from_backend()
         return self._entity_ids
+
+    def is_data_available(self) -> bool:
+        """Return True if transaction dataset is present in memory."""
+        return bool(self._transactions or self._raw_results)
+
+    # Legacy alias for test compatibility
+    load_dev_data = load_from_backend

@@ -1,0 +1,31 @@
+# BATMAN 2.0 — Streamlit Configuration
+# Visual design restored from original BATMAN desktop GUI reference.
+
+[server]
+address = "127.0.0.1"
+port = 8501
+headless = false
+runOnSave = true
+maxUploadSize = 200
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+# Original BATMAN palette:
+#   Main background : #080404  (deep near-black)
+#   Sidebar         : #0d0808  (dark terminal panel)
+#   Cards / panels  : #0d0808 / rgba(13, 5, 5, 220)
+#   Borders         : #8b0000  (thin bright-red borders)
+#   Primary accent  : #b33939  (maroon/red)
+#   Text            : #d4d4d4  (readable light silver/gray)
+#   Status active   : #22aa55 / #1de9b6 (neon green)
+base = "dark"
+primaryColor = "#b33939"
+backgroundColor = "#080404"
+secondaryBackgroundColor = "#0d0808"
+textColor = "#d4d4d4"
+font = "monospace"
+
+[logger]
+level = "warning"

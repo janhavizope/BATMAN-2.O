@@ -17,19 +17,26 @@ def load_model():
         _CACHE["model"] = joblib.load(MODEL_FILE)
     return _CACHE["model"]
 
+def is_data_available() -> bool:
+    """Check if any transaction dataset or database is available."""
+    db_path = ROOT_DIR / "bitcoin_transactions.db"
+    return db_path.exists() or DATA_FILE.exists()
+
 def load_and_predict_data():
     if "data" not in _CACHE:
-        # 1. Load from DB if available, else fallback to CSV
         db_path = ROOT_DIR / "bitcoin_transactions.db"
         if db_path.exists():
             import sqlite3
             conn = sqlite3.connect(db_path)
             df = pd.read_sql("SELECT * FROM transactions", conn)
             conn.close()
-            # Convert timestamp back to datetime
             df["timestamp"] = pd.to_datetime(df["timestamp"])
-        else:
+        elif DATA_FILE.exists():
             df = pd.read_csv(DATA_FILE, parse_dates=["timestamp"])
+        else:
+            # Graceful empty state when no dataset is bundled
+            _CACHE["data"] = (pd.DataFrame(), None)
+            return _CACHE["data"]
             
         # Feature engineering as per train_model.py
         df["fee_to_amount_ratio"] = df["fee_btc"] / df["amount_btc"].replace(0, np.nan)
@@ -59,6 +66,15 @@ def load_and_predict_data():
 
 def get_overview_stats():
     df, _ = load_and_predict_data()
+    if df.empty:
+        return {
+            "total_transactions": 0,
+            "total_wallets": 0,
+            "total_ips": 0,
+            "anomalous_entities": 0,
+            "high_risk_entities": 0,
+            "critical_alerts": 0,
+        }
     total_tx = len(df)
     total_wallets = len(set(df["input_address"]).union(set(df["output_address"])))
     total_ips = df["ip_address"].nunique()
@@ -78,6 +94,8 @@ def get_overview_stats():
 
 def get_transactions_df():
     df, _ = load_and_predict_data()
+    if df.empty:
+        return pd.DataFrame(columns=["Transaction ID", "Amount (BTC)", "Timestamp", "Source", "Destination", "Flag"])
     tx_df = pd.DataFrame({
         "Transaction ID": df["txid"].astype(str),
         "Amount (BTC)": df["amount_btc"],
@@ -95,6 +113,8 @@ def get_transactions():
 
 def get_tx_detail(tx_id: str):
     df, _ = load_and_predict_data()
+    if df.empty:
+        return None
     row = df[df["txid"] == tx_id]
     if row.empty:
         return None
@@ -114,6 +134,8 @@ def get_tx_detail(tx_id: str):
 
 def get_alerts_df():
     df, _ = load_and_predict_data()
+    if df.empty:
+        return pd.DataFrame(columns=["Rank", "Entity ID", "Risk Score", "Risk Level", "Main Reason", "Full Entity ID", "Timestamp"])
     suspicious = df[df["pred_illicit"] == 1].copy()
     suspicious = suspicious.sort_values(by="pred_proba", ascending=False)
     
@@ -138,6 +160,8 @@ def get_alerts():
 
 def get_entities():
     df, _ = load_and_predict_data()
+    if df.empty:
+        return {}
     
     entities = {}
     grouped = df.groupby("input_address")
@@ -177,6 +201,10 @@ def get_entity_ids():
 
 def get_graph_data():
     df, _ = load_and_predict_data()
+    if df.empty:
+        empty_stats = {"total_nodes": 0, "total_edges": 0, "clusters_detected": 0, "avg_degree": 0.0}
+        empty_cent = pd.DataFrame(columns=["Rank", "Node", "Centrality Score", "Cluster"])
+        return [], [], empty_stats, empty_cent
     
     subset = df.sort_values(by="pred_proba", ascending=False).head(200)
     
@@ -231,6 +259,8 @@ def get_graph_data():
 
 def get_scoreboard():
     df, _ = load_and_predict_data()
+    if df.empty:
+        return {}
     
     # 1. Find top 10 most anomalous entities (by average pred_proba)
     grouped = df.groupby("input_address")["pred_proba"].mean().sort_values(ascending=False)
@@ -265,6 +295,8 @@ def get_scoreboard():
 
 def get_explainability_data():
     df, model_dict = load_and_predict_data()
+    if df.empty:
+        return {}
     
     # Find top anomalous entities (by average pred_proba)
     grouped = df.groupby("input_address")

@@ -28,14 +28,27 @@ env/
 Thumbs.db
 desktop.ini
 
-# Data & Databases (Ignore local generated SQLite databases to prevent repo bloat)
+# Data & Databases (Ignore all datasets, tables, records, and databases)
 *.db
 *.sqlite
 *.sqlite3
-
-# Large Data (Ignore massive generated datasets, but keep base CSVs if needed)
-data/dev/*.parquet
-data/final/*.parquet
+*.csv
+*.tsv
+*.parquet
+*.feather
+*.arrow
+*.xlsx
+*.xls
+data/
+bitcoin-monitor/data/
+outputs/alerts/
+outputs/evaluation/*.csv
+outputs/evaluation/*.json
+outputs/final/
+src/core/data/dev/
+synthetic_bitcoin_transactions.csv
+dev_dataset*.csv
+results.json
 
 # Models
 models/*.pkl
