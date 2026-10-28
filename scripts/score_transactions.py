@@ -56,13 +56,13 @@ def main():
         columns={"Time step": "time_step"}
     )
     out["class"] = out["class"].map(CLASS_NAMES)
-    out.to_parquet(SCORES_FILE, index=False)
+    out.to_parquet(SCORES_FILE, index=False, compression="zstd")
     print(f"Scored {len(out)} transactions -> {SCORES_FILE}")
     print(out.groupby("split")["risk"].describe())
 
     edges = pd.read_csv(EDGES_SOURCE)
     edges.columns = ["source", "target"]
-    edges.to_parquet(EDGES_FILE, index=False)
+    edges.to_parquet(EDGES_FILE, index=False, compression="zstd")
     print(f"Saved {len(edges)} transaction flow edges -> {EDGES_FILE}")
 
 

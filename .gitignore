@@ -39,7 +39,11 @@ desktop.ini
 *.arrow
 *.xlsx
 *.xls
-/data/
+/data/*
+# Except the small precomputed risk scores the Streamlit app reads
+# (raw Elliptic / Elliptic++ CSVs stay ignored: they exceed GitHub's 100 MB limit)
+!/data/elliptic_plus/
+!/data/elliptic_plus/*.parquet
 bitcoin-monitor/data/
 outputs/alerts/
 outputs/evaluation/*.csv
@@ -65,6 +69,10 @@ logs/
 # Environment variables
 .env
 .env.local
+.streamlit/secrets.toml
+
+# Jupyter
+.ipynb_checkpoints/
 
 # matplotlib cache
 matplotlib/

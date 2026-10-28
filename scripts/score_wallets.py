@@ -100,14 +100,14 @@ def main():
         columns={"Time step": "time_step"}
     )
     out["class"] = out["class"].map(CLASS_NAMES)
-    out.to_parquet(SCORES_FILE, index=False)
+    out.to_parquet(SCORES_FILE, index=False, compression="zstd")
     print(f"Scored {len(out)} wallets -> {SCORES_FILE}")
     print(out.groupby("split")["risk"].describe())
 
     # Risk per time step for flagged wallets that the model did not train on
     flagged = out[(out["risk"] >= FLAG_THRESHOLD) & (out["split"] != "train")]["address"]
     timeline = df[df["address"].isin(flagged)][["address", "Time step", "risk"]]
-    timeline.rename(columns={"Time step": "time_step"}).to_parquet(TIMELINE_FILE, index=False)
+    timeline.rename(columns={"Time step": "time_step"}).to_parquet(TIMELINE_FILE, index=False, compression="zstd")
     print(f"Timeline for {flagged.size} flagged wallets -> {TIMELINE_FILE}")
 
     # Why each flagged wallet was flagged
@@ -117,7 +117,7 @@ def main():
     explanations = explanations.reset_index().melt(
         id_vars="address", var_name="feature", value_name="contribution"
     )
-    explanations.to_parquet(EXPLANATIONS_FILE, index=False)
+    explanations.to_parquet(EXPLANATIONS_FILE, index=False, compression="zstd")
     bias = np.mean([est.tree_.value[0, 0, 1] / est.tree_.value[0, 0].sum() for est in model.estimators_])
     gap = np.abs(bias + contrib.sum(axis=1) - explained["risk"].to_numpy()).max()
     print(f"Explanations for {len(explained)} wallets -> {EXPLANATIONS_FILE} "
