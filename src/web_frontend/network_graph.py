@@ -16,7 +16,7 @@ import networkx as nx
 import pandas as pd
 import plotly.graph_objects as go
 from src.web_frontend.components import render_metric_card, render_dev_badge, render_header
-from src.data.data_manager import get_graph_data, get_alerts_df
+from src.data.data_manager import get_graph_data, get_alerts_df, get_scoreboard
 
 # Node colors matching desktop GUI
 NODE_COLOURS = {
@@ -72,18 +72,14 @@ def render_network_graph() -> None:
         )
 
         fig_score = go.Figure()
-        time_steps = ["2024-01", "2024-02", "2024-03", "2024-04", "2024-05", "2024-06", "2024-07", "2024-08", "2024-09", "2024-10", "2024-11", "2024-12"]
         line_colors = ["#3498db", "#e74c3c", "#f1c40f", "#2ecc71", "#9b59b6", "#e67e22", "#1abc9c", "#34495e", "#ff6b81", "#7bed9f"]
 
-        if not top10_df.empty:
-            for idx, (_, row) in enumerate(top10_df.head(6).iterrows()):
-                base_score = float(row.get("Risk Score", 50))
-                # Generate realistic trendline
-                scores = [max(0, base_score + (i - 5) * 2.5) for i in range(len(time_steps))]
-                team_name = f"Wallet ({str(row.get('Entity ID', 'W'))[:6]})"
+        scoreboard = get_scoreboard()
+        if scoreboard:
+            for idx, (team_name, timeline) in enumerate(list(scoreboard.items())[:6]):
                 fig_score.add_trace(go.Scatter(
-                    x=time_steps,
-                    y=scores,
+                    x=[point["time"] for point in timeline],
+                    y=[point["score"] for point in timeline],
                     mode='lines+markers',
                     name=team_name,
                     line=dict(color=line_colors[idx % len(line_colors)], width=2),

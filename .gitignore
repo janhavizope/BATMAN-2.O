@@ -39,11 +39,12 @@ desktop.ini
 *.arrow
 *.xlsx
 *.xls
-data/
+/data/
 bitcoin-monitor/data/
 outputs/alerts/
 outputs/evaluation/*.csv
 outputs/evaluation/*.json
+!outputs/evaluation/elliptic*_metrics.json
 outputs/final/
 src/core/data/dev/
 synthetic_bitcoin_transactions.csv
@@ -55,6 +56,7 @@ models/*.pkl
 models/*.h5
 models/*.pt
 models/*.onnx
+models/*.joblib
 
 # Logs
 *.log

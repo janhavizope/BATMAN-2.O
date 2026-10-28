@@ -1,0 +1,55 @@
+{
+  "train_rows": 293977,
+  "test_rows": 73495,
+  "accuracy": 0.9850738145452071,
+  "roc_auc": 0.9936553732140233,
+  "confusion_matrix": [
+    [
+      67455,
+      320
+    ],
+    [
+      777,
+      4943
+    ]
+  ],
+  "classification_report": {
+    "licit": {
+      "precision": 0.9886123812873725,
+      "recall": 0.9952784950202878,
+      "f1-score": 0.9919342386788915,
+      "support": 67775.0
+    },
+    "illicit": {
+      "precision": 0.9391981759452783,
+      "recall": 0.8641608391608392,
+      "f1-score": 0.9001183647455158,
+      "support": 5720.0
+    },
+    "accuracy": 0.9850738145452071,
+    "macro avg": {
+      "precision": 0.9639052786163254,
+      "recall": 0.9297196670905634,
+      "f1-score": 0.9460263017122037,
+      "support": 73495.0
+    },
+    "weighted avg": {
+      "precision": 0.9847665515770959,
+      "recall": 0.9850738145452071,
+      "f1-score": 0.9847883539398086,
+      "support": 73495.0
+    }
+  },
+  "top_features": {
+    "first_sent_block": 0.0740196941685688,
+    "blocks_btwn_txs_mean": 0.040813728217639414,
+    "fees_min": 0.03989944543166078,
+    "first_block_appeared_in": 0.038341800998338955,
+    "first_received_block": 0.03831266548380017,
+    "fees_median": 0.035075695557948254,
+    "blocks_btwn_txs_total": 0.03343314045487804,
+    "transacted_w_address_total": 0.03138654868919845,
+    "total_txs": 0.03136248626599816,
+    "last_block_appeared_in": 0.030994718701269814
+  }
+}

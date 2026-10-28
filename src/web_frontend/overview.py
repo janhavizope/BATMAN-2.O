@@ -32,7 +32,8 @@ def render_overview() -> None:
     cards = [
         ("TOTAL TRANSACTIONS", f"{stats['total_transactions']:,}"),
         ("TOTAL WALLETS",      f"{stats['total_wallets']:,}"),
-        ("TOTAL IPS",          f"{stats['total_ips']:,}"),
+        ("TOTAL IPS",          f"{stats['total_ips']:,}") if "total_ips" in stats
+        else ("KNOWN ILLICIT",  f"{stats['known_illicit']:,}"),
         ("ANOMALOUS",          f"{stats['anomalous_entities']:,}"),
         ("HIGH-RISK",          f"{stats['high_risk_entities']:,}"),
         ("CRITICAL ALERTS",    f"{stats['critical_alerts']:,}"),
@@ -49,23 +50,14 @@ def render_overview() -> None:
     with col1:
         st.markdown(
             "<div style='color:#c0c0c0; font-family:\"Orbitron\", sans-serif; font-size:13px; font-weight:bold; margin-bottom:8px;'>"
-            "Alerts over time (7d)"
+            "Flagged activity over time"
             "</div>",
             unsafe_allow_html=True,
         )
 
-        # Activity timeline chart — use transaction hour buckets matching desktop GUI
-        from src.data.data_manager import get_transactions_df
-        txns_df = get_transactions_df()
-        if not txns_df.empty and "Timestamp" in txns_df.columns:
-            ts_series = pd.to_datetime(txns_df["Timestamp"], errors="coerce").dropna()
-            hours = ts_series.dt.strftime("%H:00")
-            hour_counts = hours.value_counts().sort_index()
-            times = hour_counts.index.tolist()
-            counts = hour_counts.values.tolist()
-        else:
-            times = ["00:00", "04:00", "08:00", "12:00", "16:00", "20:00"]
-            counts = [0, 0, 0, 0, 0, 0]
+        # Activity timeline chart — hour buckets (transaction data) or Elliptic time steps
+        from src.data.data_manager import get_activity_timeline
+        times, counts = get_activity_timeline()
 
         fig_line = go.Figure()
         fig_line.add_trace(go.Scatter(
@@ -90,7 +82,7 @@ def render_overview() -> None:
                 showline=True,
                 linecolor='#2a3b45',
                 tickmode='array',
-                tickvals=["00:00", "04:00", "08:00", "12:00", "16:00", "20:00"],
+                tickvals=times[::max(1, len(times) // 6)],
             ),
             yaxis=dict(
                 showgrid=True,

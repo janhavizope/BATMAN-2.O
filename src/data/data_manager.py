@@ -4,6 +4,8 @@ import joblib
 import networkx as nx
 from pathlib import Path
 
+from src.data import elliptic_source
+
 # Paths
 ROOT_DIR = Path(__file__).parent.parent.parent
 ML_DIR = ROOT_DIR / "src" / "core" / "backend" / "ml"
@@ -17,10 +19,18 @@ def load_model():
         _CACHE["model"] = joblib.load(MODEL_FILE)
     return _CACHE["model"]
 
-def is_data_available() -> bool:
-    """Check if any transaction dataset or database is available."""
+def _legacy_available() -> bool:
+    """Check if the transaction database or synthetic CSV is available."""
     db_path = ROOT_DIR / "bitcoin_transactions.db"
     return db_path.exists() or DATA_FILE.exists()
+
+def _use_elliptic() -> bool:
+    """Fall back to the Elliptic++ risk scores when no transaction dataset is present."""
+    return not _legacy_available() and elliptic_source.is_available()
+
+def is_data_available() -> bool:
+    """Check if any transaction dataset or database is available."""
+    return _legacy_available() or elliptic_source.is_available()
 
 def load_and_predict_data():
     if "data" not in _CACHE:
@@ -65,6 +75,8 @@ def load_and_predict_data():
     return _CACHE["data"]
 
 def get_overview_stats():
+    if _use_elliptic():
+        return elliptic_source.get_overview_stats()
     df, _ = load_and_predict_data()
     if df.empty:
         return {
@@ -93,6 +105,8 @@ def get_overview_stats():
     }
 
 def get_transactions_df():
+    if _use_elliptic():
+        return elliptic_source.get_transactions_df()
     df, _ = load_and_predict_data()
     if df.empty:
         return pd.DataFrame(columns=["Transaction ID", "Amount (BTC)", "Timestamp", "Source", "Destination", "Flag"])
@@ -106,12 +120,25 @@ def get_transactions_df():
     })
     return tx_df
 
+def get_activity_timeline():
+    """Return (labels, counts) for the Overview activity chart."""
+    if _use_elliptic():
+        return elliptic_source.get_activity_timeline()
+    txns_df = get_transactions_df()
+    if txns_df.empty:
+        return ["00:00", "04:00", "08:00", "12:00", "16:00", "20:00"], [0, 0, 0, 0, 0, 0]
+    ts_series = pd.to_datetime(txns_df["Timestamp"], errors="coerce").dropna()
+    hour_counts = ts_series.dt.strftime("%H:00").value_counts().sort_index()
+    return hour_counts.index.tolist(), hour_counts.values.tolist()
+
 def get_transactions():
     """Returns a list of dicts for the PySide6 app"""
     df = get_transactions_df()
     return df.to_dict('records')
 
 def get_tx_detail(tx_id: str):
+    if _use_elliptic():
+        return elliptic_source.get_tx_detail(tx_id)
     df, _ = load_and_predict_data()
     if df.empty:
         return None
@@ -133,6 +160,8 @@ def get_tx_detail(tx_id: str):
     }
 
 def get_alerts_df():
+    if _use_elliptic():
+        return elliptic_source.get_alerts_df()
     df, _ = load_and_predict_data()
     if df.empty:
         return pd.DataFrame(columns=["Rank", "Entity ID", "Risk Score", "Risk Level", "Main Reason", "Full Entity ID", "Timestamp"])
@@ -159,6 +188,8 @@ def get_alerts():
     return df.to_dict('records')
 
 def get_entities():
+    if _use_elliptic():
+        return elliptic_source.get_entities()
     df, _ = load_and_predict_data()
     if df.empty:
         return {}
@@ -200,6 +231,8 @@ def get_entity_ids():
     return list(get_entities().keys())
 
 def get_graph_data():
+    if _use_elliptic():
+        return elliptic_source.get_graph_data()
     df, _ = load_and_predict_data()
     if df.empty:
         empty_stats = {"total_nodes": 0, "total_edges": 0, "clusters_detected": 0, "avg_degree": 0.0}
@@ -258,6 +291,8 @@ def get_graph_data():
     return unique_nodes, unique_edges, stats, cent_table
 
 def get_scoreboard():
+    if _use_elliptic():
+        return elliptic_source.get_scoreboard()
     df, _ = load_and_predict_data()
     if df.empty:
         return {}
@@ -294,6 +329,8 @@ def get_scoreboard():
     return scoreboard
 
 def get_explainability_data():
+    if _use_elliptic():
+        return elliptic_source.get_explainability_data()
     df, model_dict = load_and_predict_data()
     if df.empty:
         return {}

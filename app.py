@@ -438,6 +438,8 @@ with st.sidebar:
         "> Entity Investigation",
         "> Alerts",
         "> Explainability",
+        "> Model Results",
+        "> Wallet Scanner",
     ]
 
     selected_nav = st.radio(
@@ -483,6 +485,14 @@ elif clean_page == "Alerts":
 elif clean_page == "Explainability":
     from src.web_frontend.explainability import render_explainability
     render_explainability()
+
+elif clean_page == "Model Results":
+    from src.web_frontend.model_results import render_model_results
+    render_model_results()
+
+elif clean_page == "Wallet Scanner":
+    from src.web_frontend.wallet_scanner import render_wallet_scanner
+    render_wallet_scanner()
 
 # ---------------------------------------------------------------------------
 # Footer — Status bar style
