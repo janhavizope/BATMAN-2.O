@@ -106,7 +106,7 @@ Read these numbers as an **optimistic upper bound**:
 - **Time leaks into the features.** `time_step` and the block-number wallet features (`first_block_appeared_in`, `last_block_appeared_in`, …) are model inputs, so the model partly learns *when* a wallet was active rather than *how* it behaves.
 - **A fixed 0.5 threshold flags about 23k unlabelled or test wallets.** That is too many to review by hand, so the UI shows the top 500.
 
-These are listed in the [Roadmap](#known-limitations--roadmap).
+Fixes for these are tracked in the [TODO](#todo) list.
 
 ---
 
@@ -173,30 +173,44 @@ The tests cover the unsupervised backend (ingestion, validation, features, graph
 
 ---
 
-## Known limitations & roadmap
+## TODO
 
-**Evaluation**
-- [ ] Use a temporal split (train on steps 1–34, test on 35–49) and report F1 per time step
-- [ ] Remove `time_step` and block-number features from the models
-- [ ] Choose the alert threshold from the precision-recall curve for a target alert volume
+Priorities: **P0** = the results or claims are wrong until fixed · **P1** = a core feature is missing or broken · **P2** = cleanup and quality.
 
-**Unsupervised pipeline**
-- [ ] Remove the risk-engine weights derived from ground-truth labels (`risk_engine.py`), which make the "unsupervised" score partly supervised
-- [ ] Generate reason text from the same signals that produce the score
-- [ ] Fix the input/output (sent vs received) naming in `feature_engineering.py`
-- [ ] Build the graph from wallets and transactions only, without IP/ASN/country hub nodes
-- [ ] Run the pipeline on Elliptic++ instead of synthetic data
+### P0 — Evaluation and correctness
 
-**Product**
-- [ ] One data layer shared by the web and desktop apps
-- [ ] Load the Elliptic++ wallet↔transaction links so wallet, transaction, and graph views connect
-- [ ] Ingest your own transaction CSV from the UI
-- [ ] Remove the unused alert/risk-score/explain chain and duplicate modules (`feature_engineering_OLD.py`, `clustering_model.py`, `bitcoin-monitor/`)
+- [ ] **Use a temporal train/test split.** Train on time steps 1–34, test on 35–49, and report illicit-class F1 per time step. Both scripts currently use a random 80/20 split: [train_elliptic.py:166](scripts/train_elliptic.py#L166), [train_elliptic_plus.py:70](scripts/train_elliptic_plus.py#L70).
+- [ ] **Drop time-revealing features.** `time_step` is still a model input ([train_elliptic.py:67](scripts/train_elliptic.py#L67), [train_elliptic_plus.py:53](scripts/train_elliptic_plus.py#L53)). For wallets ([train_elliptic_plus.py:63](scripts/train_elliptic_plus.py#L63)), also drop the block-number features: `first_block_appeared_in`, `last_block_appeared_in`, `first_sent_block`, `first_received_block`.
+- [ ] **Re-run training and scoring, then update the metrics** in this README and on the Model Results page.
+- [ ] **Remove the label-derived weights** in [risk_engine.py:24](src/core/backend/risk/risk_engine.py#L24). They are correlations with the ground-truth labels, which makes the "unsupervised" score partly supervised and evaluated on its own labels.
+- [ ] **Make the alert reasons agree with the score.** The weights treat *low* degree, fees, and counterparties as risky, but `build_reasons` reports "unusually *high*" values. Four computed components (graph, temporal, transaction, network) are unused in `risk_score` ([risk_engine.py:131](src/core/backend/risk/risk_engine.py#L131)).
+- [ ] **Fix sent-vs-received in feature engineering.** Rows where the wallet is an *input* (sending) are counted as `incoming_transaction_count` ([feature_engineering.py:140](src/core/backend/features/feature_engineering.py#L140)), which also inverts `min_pass_through_gap`. Co-input addresses are counted as counterparties ([lines 150 and 156](src/core/backend/features/feature_engineering.py#L150)), but they usually belong to the same owner.
+- [ ] **Desktop transaction flag shows the label, not a prediction.** [desktop data_manager.py:158](src/desktop_gui/data/data_manager.py#L158) reads the ground-truth `is_suspicious` column. It also compares against `"true"`, while `scripts/generate_dev_dataset.py` writes `1`/`0`, so every row shows "Normal".
 
-**Engineering**
-- [ ] A single pipeline command (download → train → score → evaluate)
-- [ ] Pin dependency versions; add tests for `src/data/` and the scripts; add CI
-- [ ] Desktop app: load fonts only from `src/resources/fonts` (it currently tries to download missing fonts)
+### P1 — Product
+
+- [ ] **Choose the alert threshold from the precision-recall curve.** The fixed 0.5 ([elliptic_source.py:25](src/data/elliptic_source.py#L25)) flags about 23k wallets. Target a reviewable alert volume instead, and expose the threshold in one place.
+- [ ] **Load the Elliptic++ wallet↔transaction edge lists** (`AddrTx`, `TxAddr`). That lets Entity Investigation show a wallet's transactions, and lets the Network Graph page show the graph around the listed entities instead of an unrelated transaction subgraph.
+- [ ] **Add a way to ingest your own data.** Upload a CSV, validate it with `validation/validator.py`, score it, and show the results. Remove the "Ingest external transaction records" text ([components.py:74](src/web_frontend/components.py#L74)) until this exists.
+- [ ] **Use one data layer for both apps.** The desktop app should call `src/data/` instead of its own `desktop_gui/data/data_manager.py`, or the desktop app should be retired.
+- [ ] **Run the unsupervised pipeline on Elliptic++** instead of synthetic data.
+- [ ] **Remove IP/ASN/country hub nodes** from the graph ([graph_builder.py:91](src/core/backend/graph/graph_builder.py#L91)). Real Bitcoin transactions don't carry these fields, and hub nodes distort PageRank and betweenness.
+- [ ] **Replace hardcoded status badges** ("SYSTEM ONLINE", "[LIVE MODE]") with real status, or remove them.
+
+### P2 — Cleanup and engineering
+
+- [ ] **Delete the dead alert → risk-score → explain → evaluate chain.** It reads `clustered_entities.parquet`, which nothing writes, from `src/core/data/dev/` ([generate_alerts.py:42](src/core/backend/alerts/generate_alerts.py#L42)).
+- [ ] **Remove duplicate modules:** `feature_engineering_OLD.py`, `ml/clustering_model.py` (duplicate HDBSCAN), `bitcoin-monitor/`, extra dataset generators, and `tune_unsupervised_models.py` (imports `backend.*` paths that no longer exist).
+- [ ] **Centralise paths** in one config module, replacing `parents[4]`, `../..` and `sys.path.append` in each module.
+- [ ] **Add a single pipeline command** for download → train → score → evaluate.
+- [ ] **Pin dependency versions** in `requirements.txt`.
+- [ ] **Add tests** for `src/data/` and the training and scoring scripts, using small fixtures. Current GUI tests pass on empty data, and `tests/test_alerts.py` re-implements the logic it is meant to test.
+- [ ] **Add CI** (GitHub Actions) to run the tests on every push.
+- [ ] **Load desktop fonts only from `src/resources/fonts`.** [theme_setup.py:24](src/desktop_gui/utils/theme_setup.py#L24) downloads missing fonts from GitHub, which breaks offline use.
+- [ ] **Replace `iterrows()` loops** in feature engineering and the graph builder with vectorised pandas.
+- [ ] **Escape dataset values** before inserting them into `unsafe_allow_html` markup.
+- [ ] **Move large parquet files to Git LFS** or a release asset.
+- [ ] **Update or remove `PROJECT_STRUCTURE.md`.** It lists a `config/` folder that doesn't exist.
 
 ---
 
