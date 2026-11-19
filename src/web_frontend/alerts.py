@@ -64,7 +64,7 @@ def render_alerts() -> None:
         st.info("No alerts match the selected criteria.")
     else:
         display_cols = ["Rank", "Entity ID", "Risk Score", "Risk Level", "Main Reason"]
-        st.dataframe(filtered[display_cols], use_container_width=True, hide_index=True)
+        st.dataframe(filtered[display_cols], width="stretch", hide_index=True)
 
         st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
 

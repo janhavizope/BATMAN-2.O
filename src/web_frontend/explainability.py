@@ -122,7 +122,7 @@ def render_explainability() -> None:
             margin=dict(l=20, r=20, t=10, b=30),
             height=max(180, len(y_labels) * 55),
         )
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.plotly_chart(fig_bar, width="stretch")
 
     st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
 

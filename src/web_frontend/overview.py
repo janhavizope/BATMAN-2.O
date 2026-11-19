@@ -97,7 +97,7 @@ def render_overview() -> None:
             margin=dict(l=35, r=20, t=20, b=30),
             height=300,
         )
-        st.plotly_chart(fig_line, use_container_width=True)
+        st.plotly_chart(fig_line, width="stretch")
 
     with col2:
         st.markdown(
@@ -146,7 +146,7 @@ def render_overview() -> None:
             margin=dict(l=10, r=10, t=10, b=10),
             height=300,
         )
-        st.plotly_chart(fig_donut, use_container_width=True)
+        st.plotly_chart(fig_donut, width="stretch")
 
     st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
 

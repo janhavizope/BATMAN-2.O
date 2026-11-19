@@ -102,7 +102,7 @@ def render_transaction_analysis() -> None:
                         height=240,
                     ),
                 )
-                st.plotly_chart(fig_graph, use_container_width=True)
+                st.plotly_chart(fig_graph, width="stretch")
             else:
                 st.markdown(
                     "<div style='text-align:center; padding:40px; color:#5e1313; font-family:\"Orbitron\", sans-serif; font-size:14px;'>"
@@ -125,7 +125,7 @@ def render_transaction_analysis() -> None:
         "</div>",
         unsafe_allow_html=True,
     )
-    st.dataframe(filtered_df.head(1000), use_container_width=True, hide_index=True)
+    st.dataframe(filtered_df.head(1000), width="stretch", hide_index=True)
 
     st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
 

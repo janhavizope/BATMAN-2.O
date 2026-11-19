@@ -137,7 +137,8 @@ def test_entities_and_explanations(scores):
     assert "no ground-truth label" in entity["explanation"]
     assert len(entity["timeline"]) == 3
     explained = elliptic_source.get_explainability_data()
-    assert explained["wallet02"]["top_features"][0]["feature"] == "total_txs"
+    # Feature names are prettified for display (same as the Alerts page)
+    assert explained["wallet02"]["top_features"][0]["feature"] == "total txs"
 
 
 def test_graph_data(scores):

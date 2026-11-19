@@ -122,7 +122,7 @@ def render_network_graph() -> None:
             margin=dict(l=35, r=20, t=20, b=50),
             height=380,
         )
-        st.plotly_chart(fig_score, use_container_width=True)
+        st.plotly_chart(fig_score, width="stretch")
 
         st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
 
@@ -135,7 +135,7 @@ def render_network_graph() -> None:
         )
         if not top10_df.empty:
             rank_display = top10_df[["Rank", "Entity ID", "Risk Score"]]
-            st.dataframe(rank_display, use_container_width=True, hide_index=True)
+            st.dataframe(rank_display, width="stretch", hide_index=True)
         else:
             st.info("No ranking data available.")
 
@@ -204,7 +204,7 @@ def render_network_graph() -> None:
                     height=450,
                 ),
             )
-            st.plotly_chart(fig_network, use_container_width=True)
+            st.plotly_chart(fig_network, width="stretch")
 
         st.caption("Node colours: " + " | ".join(f"**{k}** ({v})" for k, v in NODE_COLOURS.items()))
 
@@ -234,4 +234,4 @@ def render_network_graph() -> None:
             "</div>",
             unsafe_allow_html=True,
         )
-        st.dataframe(cent_table, use_container_width=True, hide_index=True)
+        st.dataframe(cent_table, width="stretch", hide_index=True)

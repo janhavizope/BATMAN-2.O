@@ -99,7 +99,7 @@ def render_entity_investigation() -> None:
         tx_data = entity.get("transactions", [])
         if tx_data:
             st.caption(f"{len(tx_data):,} transactions this wallet sent or received (Elliptic++ AddrTx / TxAddr).")
-            st.dataframe(pd.DataFrame(tx_data), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(tx_data), width="stretch", hide_index=True)
         else:
             st.info("No wallet-transaction links available. They are written by scripts/score_wallets.py "
                     "when the Elliptic++ AddrTx / TxAddr edge lists are present.")
@@ -108,7 +108,7 @@ def render_entity_investigation() -> None:
         timeline_data = entity.get("timeline", [])
         if timeline_data:
             tdf = pd.DataFrame(timeline_data)
-            st.dataframe(tdf, use_container_width=True, hide_index=True)
+            st.dataframe(tdf, width="stretch", hide_index=True)
         else:
             st.info("No timeline events recorded.")
 
@@ -116,7 +116,7 @@ def render_entity_investigation() -> None:
         net_data = entity.get("network_associations", [])
         if net_data:
             ndf = pd.DataFrame(net_data)
-            st.dataframe(ndf, use_container_width=True, hide_index=True)
+            st.dataframe(ndf, width="stretch", hide_index=True)
         else:
             st.info("No network associations recorded.")
 
@@ -138,7 +138,7 @@ def render_entity_investigation() -> None:
         features_data = entity.get("top_features", [])
         if features_data:
             fdf = pd.DataFrame(features_data)
-            st.dataframe(fdf, use_container_width=True, hide_index=True)
+            st.dataframe(fdf, width="stretch", hide_index=True)
         else:
             st.info("No feature contributions available.")
 

@@ -330,7 +330,7 @@ def get_entities():
                 ],
                 "evidence": _feature_evidence(wallet, contributions),
                 "top_features": [
-                    {"feature": r["feature"], "contribution": round(r["contribution"], 3)}
+                    {"feature": _pretty(r["feature"]), "contribution": round(r["contribution"], 3)}
                     for _, r in contributions.iterrows()
                 ],
                 "explanation": _reason(wallet, contributions),
@@ -449,7 +449,7 @@ def get_explainability_data():
             "anomaly_score": wallet["risk"],
             "risk_score": int(wallet["risk"] * 100),
             "top_features": [
-                {"feature": r["feature"], "contribution": round(r["contribution"], 3), "direction": "increases"}
+                {"feature": _pretty(r["feature"]), "contribution": round(r["contribution"], 3), "direction": "increases"}
                 for _, r in contributions.iterrows()
             ],
             "evidence": _feature_evidence(wallet, contributions)
