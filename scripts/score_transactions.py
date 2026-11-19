@@ -20,12 +20,13 @@ Run (from the project root, after train_elliptic_plus.py txs):
 import joblib
 import pandas as pd
 
-from train_elliptic import MODEL_DIR, ROOT
-from train_elliptic_plus import DATA_DIR, split
+from train_elliptic import MODEL_DIR
+from train_elliptic_plus import DATA_DIR, TIME_COLUMN, split
+from src.config import ELLIPTIC_DIR
 
 MODEL_FILE = MODEL_DIR / "elliptic_plus_txs_rf_model.joblib"
 SCORES_FILE = DATA_DIR / "tx_scores.parquet"
-EDGES_SOURCE = ROOT / "data" / "elliptic" / "elliptic_txs_edgelist.csv"
+EDGES_SOURCE = ELLIPTIC_DIR / "elliptic_txs_edgelist.csv"
 EDGES_FILE = DATA_DIR / "tx_edges.parquet"
 INFO_COLUMNS = ["total_BTC", "fees", "size", "in_txs_degree", "out_txs_degree",
                 "num_input_addresses", "num_output_addresses"]
@@ -41,9 +42,9 @@ def main():
         pd.read_csv(DATA_DIR / "txs_classes.csv"), on="txId"
     )
     labelled = df[df["class"] != 3]
-    X = labelled.drop(columns=["txId", "class"]).fillna(0)
+    X = labelled.drop(columns=["txId", "class", TIME_COLUMN]).fillna(0)
     y = (labelled["class"] == 1).astype(int)
-    X_train, X_test, _, _ = split(X, y, None)
+    X_train, X_test, _, _ = split(X, y, None, labelled[TIME_COLUMN])
 
     df["split"] = "unknown"
     df.loc[X_train.index, "split"] = "train"

@@ -15,6 +15,8 @@ Outputs (read by the Streamlit app):
     data/elliptic_plus/wallet_timeline.parquet      risk per time step for flagged wallets
     data/elliptic_plus/wallet_explanations.parquet  per-feature contributions for every
                                                     flagged wallet
+    data/elliptic_plus/wallet_tx_edges.parquet      transactions each flagged wallet sent
+                                                    or received (from AddrTx / TxAddr)
 
 Run (from the project root, after train_elliptic_plus.py wallets):
     python scripts/score_wallets.py
@@ -31,6 +33,7 @@ MODEL_FILE = MODEL_DIR / "elliptic_plus_wallets_rf_model.joblib"
 SCORES_FILE = DATA_DIR / "wallet_scores.parquet"
 TIMELINE_FILE = DATA_DIR / "wallet_timeline.parquet"
 EXPLANATIONS_FILE = DATA_DIR / "wallet_explanations.parquet"
+WALLET_TX_FILE = DATA_DIR / "wallet_tx_edges.parquet"
 N_TOP_FEATURES = 8
 FLAG_THRESHOLD = 0.5
 # Descriptive columns kept for display even if they are not top features
@@ -75,9 +78,9 @@ def main():
     saved = joblib.load(MODEL_FILE)
     model, features = saved["model"], saved["features"]
 
-    # Recreate the training split (same random_state) to tag train/test wallets
-    X, y, groups = load_wallets()
-    X_train, X_test, _, _ = split(X.fillna(0), y, groups)
+    # Recreate the training split to tag train/test wallets
+    X, y, groups, time_steps = load_wallets()
+    X_train, X_test, _, _ = split(X.fillna(0), y, groups, time_steps)
     split_of = pd.concat([
         pd.Series("train", index=groups.loc[X_train.index].unique()),
         pd.Series("test", index=groups.loc[X_test.index].unique()),
@@ -122,6 +125,31 @@ def main():
     gap = np.abs(bias + contrib.sum(axis=1) - explained["risk"].to_numpy()).max()
     print(f"Explanations for {len(explained)} wallets -> {EXPLANATIONS_FILE} "
           f"(max reconstruction error {gap:.2e})")
+
+    # Which transactions each flagged wallet took part in
+    edges = wallet_tx_edges(set(flagged))
+    if edges is not None:
+        edges.to_parquet(WALLET_TX_FILE, index=False, compression="zstd")
+        print(f"{len(edges)} wallet-transaction links for flagged wallets -> {WALLET_TX_FILE}")
+
+
+def wallet_tx_edges(addresses):
+    """Sent / received links between the given wallets and transactions.
+
+    Returns None when the Elliptic++ AddrTx / TxAddr edge lists are missing.
+    """
+    sources = {
+        "sent": (DATA_DIR / "AddrTx_edgelist.csv", "input_address"),
+        "received": (DATA_DIR / "TxAddr_edgelist.csv", "output_address"),
+    }
+    if not all(path.exists() for path, _ in sources.values()):
+        print("AddrTx / TxAddr edge lists not found: skipping wallet-transaction links")
+        return None
+    parts = []
+    for direction, (path, column) in sources.items():
+        links = pd.read_csv(path).rename(columns={column: "address"})
+        parts.append(links[links["address"].isin(addresses)][["address", "txId"]].assign(direction=direction))
+    return pd.concat(parts, ignore_index=True).drop_duplicates()
 
 
 if __name__ == "__main__":

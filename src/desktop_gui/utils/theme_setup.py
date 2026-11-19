@@ -1,43 +1,30 @@
-import os
-import urllib.request
 from PySide6.QtGui import QFontDatabase, QFont
 from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import Qt
 
-FONTS = {
-    "Orbitron": "https://github.com/google/fonts/raw/main/ofl/orbitron/Orbitron%5Bwght%5D.ttf",
-    "JetBrains Mono": "https://github.com/JetBrains/JetBrainsMono/raw/master/fonts/ttf/JetBrainsMono-Regular.ttf"
-}
+from src.config import FONTS_DIR
+
+# Bundled in src/resources/fonts; nothing is downloaded, so the app works offline
+FONTS = ["Orbitron", "JetBrains Mono"]
 
 def setup_theme(app: QApplication):
-    # 1. Ensure fonts directory exists
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    fonts_dir = os.path.join(project_root, "resources", "fonts")
-    os.makedirs(fonts_dir, exist_ok=True)
+    # 1. Register the bundled fonts (Qt falls back to Consolas/monospace if one is missing)
+    for font_name in FONTS:
+        font_path = FONTS_DIR / f"{font_name.replace(' ', '')}.ttf"
+        if not font_path.exists():
+            print(f"Font not found, using fallback: {font_path}")
+            continue
+        font_id = QFontDatabase.addApplicationFont(str(font_path))
+        if font_id != -1:
+            families = QFontDatabase.applicationFontFamilies(font_id)
+            if families:
+                print(f"Registered font: {families[0]}")
+        else:
+            print(f"Failed to register font: {font_path}")
 
-    # 2. Download and register fonts
-    for font_name, url in FONTS.items():
-        font_path = os.path.join(fonts_dir, f"{font_name.replace(' ', '')}.ttf")
-        if not os.path.exists(font_path):
-            print(f"Downloading {font_name}...")
-            try:
-                urllib.request.urlretrieve(url, font_path)
-            except Exception as e:
-                print(f"Failed to download {font_name}: {e}")
-        
-        if os.path.exists(font_path):
-            font_id = QFontDatabase.addApplicationFont(font_path)
-            if font_id != -1:
-                families = QFontDatabase.applicationFontFamilies(font_id)
-                if families:
-                    print(f"Registered font: {families[0]}")
-            else:
-                print(f"Failed to register font: {font_path}")
-
-    # 3. Apply Base Font
+    # 2. Apply Base Font
     app.setFont(QFont("JetBrains Mono", 10))
 
-    # 4. Global QSS (Cyberpunk Hacker Terminal Style - Maroon & Black)
+    # 3. Global QSS (Cyberpunk Hacker Terminal Style - Maroon & Black)
     app.setStyleSheet("""
         /* Deep Dark Background */
         QMainWindow {

@@ -2,12 +2,14 @@
 Entity Investigation Page
 -------------------------
 Restores the desktop command-center visual layout:
-- Header: ENTITY INVESTIGATION + SYSTEM ONLINE indicator
+- Header: ENTITY INVESTIGATION
 - Live mode DevBadge
 - Entity Selector combo
 - 2x3 Metric Card Grid: ENTITY ID, RISK SCORE, RISK LEVEL, ANOMALY SCORE, TRANSACTIONS, COUNTERPARTIES
 - Tabs: Timeline, Network, Evidence, Features, Explanation, Notes
 """
+
+from html import escape
 
 import streamlit as st
 import pandas as pd
@@ -40,7 +42,8 @@ def render_entity_investigation() -> None:
         with r2c3:
             render_metric_card("COUNTERPARTIES", "0")
         st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
-        st.info("No entities available. Please ingest an external Bitcoin transaction dataset to begin investigation.")
+        st.info("No entities available. Run scripts/run_pipeline.py to create the wallet risk scores, "
+                "or score your own data on the Upload & Score page.")
         return
 
     # --- Entity Selector -----------------------------------------------------
@@ -88,9 +91,18 @@ def render_entity_investigation() -> None:
     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
 
     # --- Tabs ----------------------------------------------------------------
-    tab_timeline, tab_network, tab_evidence, tab_features, tab_explanation, tab_notes = st.tabs(
-        ["Timeline", "Network", "Evidence", "Features", "Explanation", "Notes"]
+    tab_timeline, tab_transactions, tab_network, tab_evidence, tab_features, tab_explanation, tab_notes = st.tabs(
+        ["Timeline", "Transactions", "Network", "Evidence", "Features", "Explanation", "Notes"]
     )
+
+    with tab_transactions:
+        tx_data = entity.get("transactions", [])
+        if tx_data:
+            st.caption(f"{len(tx_data):,} transactions this wallet sent or received (Elliptic++ AddrTx / TxAddr).")
+            st.dataframe(pd.DataFrame(tx_data), use_container_width=True, hide_index=True)
+        else:
+            st.info("No wallet-transaction links available. They are written by scripts/score_wallets.py "
+                    "when the Elliptic++ AddrTx / TxAddr edge lists are present.")
 
     with tab_timeline:
         timeline_data = entity.get("timeline", [])
@@ -111,7 +123,7 @@ def render_entity_investigation() -> None:
     with tab_evidence:
         evidence_list = entity.get("evidence", [])
         if evidence_list:
-            ev_html = "".join(f"<div style='margin-bottom:6px;'>{i}. {ev}</div>" for i, ev in enumerate(evidence_list, 1))
+            ev_html = "".join(f"<div style='margin-bottom:6px;'>{i}. {escape(str(ev))}</div>" for i, ev in enumerate(evidence_list, 1))
             st.markdown(
                 f"<div style='background-color:#111118; border:1px solid #2a0a0a; border-radius:4px; padding:12px; "
                 f"font-family:\"JetBrains Mono\", Consolas, monospace; font-size:12px; color:#c0c0c0; line-height:1.6;'>"
@@ -135,7 +147,7 @@ def render_entity_investigation() -> None:
         st.markdown(
             f"<div style='background-color:#111118; border:1px solid #2a0a0a; border-radius:4px; padding:12px; "
             f"font-family:\"JetBrains Mono\", Consolas, monospace; font-size:12px; color:#c0c0c0; line-height:1.6;'>"
-            f"{expl_text}"
+            f"{escape(str(expl_text))}"
             f"</div>",
             unsafe_allow_html=True,
         )

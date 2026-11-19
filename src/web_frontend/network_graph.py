@@ -87,7 +87,7 @@ def render_network_graph() -> None:
                 ))
         else:
             fig_score.add_annotation(
-                text="No entity timeline data available — Ingest a dataset to generate timelines",
+                text="No entity timeline data available — run scripts/run_pipeline.py to create wallet timelines",
                 xref="paper", yref="paper",
                 x=0.5, y=0.5, showarrow=False,
                 font=dict(color="#666666", size=12, family="JetBrains Mono, monospace")

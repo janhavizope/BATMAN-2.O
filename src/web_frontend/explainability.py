@@ -2,7 +2,7 @@
 Explainability Page
 -------------------
 Restores the desktop command-center visual layout:
-- EXPLAINABILITY header + SYSTEM ONLINE badge
+- EXPLAINABILITY header
 - Live mode DevBadge
 - Entity Selector combo
 - 2 Metric Cards: ANOMALY SCORE and RISK SCORE
@@ -11,6 +11,8 @@ Restores the desktop command-center visual layout:
 - REASON: technical dark panel
 - Threshold slider with cyber track and red handle
 """
+
+from html import escape
 
 import streamlit as st
 import pandas as pd
@@ -35,7 +37,7 @@ def render_explainability() -> None:
         with scol2:
             render_metric_card("RISK SCORE", "0/100")
         st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
-        st.info("No explainability records loaded. Ingest an external Bitcoin transaction dataset to view feature contributions.")
+        st.info("No explainability records loaded. Run scripts/run_pipeline.py to create the wallet explanations.")
         return
 
     # --- Entity Selector -----------------------------------------------------
@@ -133,7 +135,7 @@ def render_explainability() -> None:
     )
     evidence_list = expl.get("evidence", [])
     if evidence_list:
-        ev_lines = "".join(f"<div style='margin-bottom:4px;'>{i}. {ev}</div>" for i, ev in enumerate(evidence_list, 1))
+        ev_lines = "".join(f"<div style='margin-bottom:4px;'>{i}. {escape(str(ev))}</div>" for i, ev in enumerate(evidence_list, 1))
         st.markdown(
             f"<div style='background-color:#111118; border:1px solid #2a0a0a; border-radius:4px; padding:12px; "
             f"font-family:\"JetBrains Mono\", Consolas, monospace; font-size:12px; color:#c0c0c0; line-height:1.6;'>"
@@ -157,7 +159,7 @@ def render_explainability() -> None:
     st.markdown(
         f"<div style='background-color:#111118; border:1px solid #2a0a0a; border-radius:4px; padding:12px; "
         f"font-family:\"JetBrains Mono\", Consolas, monospace; font-size:12px; color:#c0c0c0; line-height:1.6;'>"
-        f"{human_reason}"
+        f"{escape(str(human_reason))}"
         f"</div>",
         unsafe_allow_html=True,
     )

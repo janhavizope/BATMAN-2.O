@@ -18,9 +18,7 @@ try:
 except ImportError:
     from sklearn.cluster import HDBSCAN as HDBSCAN_Class
 
-# Ensure backend packages can be imported
-REPO_ROOT = Path(__file__).resolve().parents[4]
-sys.path.append(str(REPO_ROOT))
+from src.config import DEV_ANOMALY_SCORES, DEV_CLUSTER_LABELS
 
 class TransactionClusteredModel:
     """
@@ -30,12 +28,45 @@ class TransactionClusteredModel:
     def __init__(self, min_cluster_size: int = 10, min_samples: int = 10):
         # min_cluster_size: The minimum size of a group of points to be considered a cluster.
         # min_samples: The number of samples in a neighborhood for a point to be considered a core point.
+        self.min_cluster_size = min_cluster_size
+        self.min_samples = min_samples
         self.model = HDBSCAN_Class(
             min_cluster_size=min_cluster_size,
             min_samples=min_samples
         )
         self.scaler = StandardScaler()
-        
+
+    def fit_predict_sampled(self, X: pd.DataFrame, max_fit_samples: int, random_state: int = 42) -> np.ndarray:
+        """
+        Like fit_predict, but for datasets too large to cluster directly.
+
+        HDBSCAN is fitted on a random sample of max_fit_samples rows; every
+        row is then assigned to a cluster (or -1, noise) with hdbscan's
+        approximate_predict. With scikit-learn's HDBSCAN, which has no
+        approximate_predict, each row takes the label of its nearest sampled row.
+        Falls back to fit_predict when X is not larger than the sample.
+        """
+        if len(X) <= max_fit_samples:
+            return self.fit_predict(X)
+
+        X_scaled = self.scaler.fit_transform(X)
+        rng = np.random.default_rng(random_state)
+        sample = rng.choice(len(X_scaled), size=max_fit_samples, replace=False)
+
+        if HDBSCAN_Class.__module__.startswith("hdbscan"):
+            self.model = HDBSCAN_Class(
+                min_cluster_size=self.min_cluster_size,
+                min_samples=self.min_samples,
+                prediction_data=True,
+            ).fit(X_scaled[sample])
+            labels, _ = hdbscan.approximate_predict(self.model, X_scaled)
+            return labels
+
+        from sklearn.neighbors import KNeighborsClassifier
+        sample_labels = self.model.fit_predict(X_scaled[sample])
+        nearest = KNeighborsClassifier(n_neighbors=1).fit(X_scaled[sample], sample_labels)
+        return nearest.predict(X_scaled)
+
     def fit_predict(self, X: pd.DataFrame) -> np.ndarray:
         """
         Standardizes features and predicts cluster labels.
@@ -59,9 +90,8 @@ class TransactionClusteredModel:
         return labels
 
 def main():
-    REPO_ROOT = Path(__file__).resolve().parents[4]
-    scores_path = str(REPO_ROOT / "data" / "dev" / "anomaly_scores.parquet")
-    output_path = str(REPO_ROOT / "data" / "dev" / "cluster_labels.parquet")
+    scores_path = str(DEV_ANOMALY_SCORES)
+    output_path = str(DEV_CLUSTER_LABELS)
     
     if not os.path.exists(scores_path):
         print(f"Error: anomaly_scores.parquet not found at {scores_path}. Run anomaly detection first.")

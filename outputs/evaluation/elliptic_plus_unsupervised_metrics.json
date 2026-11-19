@@ -1,0 +1,40 @@
+{
+  "description": "Label-free unsupervised risk score on Elliptic++, checked against wallet labels",
+  "valid_transactions": 202804,
+  "wallets_scored": 822942,
+  "risk_levels": {
+    "LOW": 749023,
+    "MEDIUM": 73413,
+    "HIGH": 504,
+    "CRITICAL": 2
+  },
+  "all_labelled_wallets": {
+    "wallets": 265354,
+    "illicit_rate": 0.053762144154601024,
+    "roc_auc": 0.5564897334360096,
+    "precision_at_100": 0.02,
+    "precision_at_500": 0.108,
+    "precision_at_1000": 0.115,
+    "precision_at_5000": 0.0882
+  },
+  "test_wallets": {
+    "unsupervised": {
+      "wallets": 92451,
+      "illicit_rate": 0.05288206725724979,
+      "roc_auc": 0.4815490887492423,
+      "precision_at_100": 0.13,
+      "precision_at_500": 0.098,
+      "precision_at_1000": 0.081,
+      "precision_at_5000": 0.0346
+    },
+    "supervised_random_forest": {
+      "wallets": 92451,
+      "illicit_rate": 0.05288206725724979,
+      "roc_auc": 0.8390853370675833,
+      "precision_at_100": 0.78,
+      "precision_at_500": 0.706,
+      "precision_at_1000": 0.52,
+      "precision_at_5000": 0.331
+    }
+  }
+}

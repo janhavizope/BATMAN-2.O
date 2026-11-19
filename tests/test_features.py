@@ -9,8 +9,6 @@ import unittest
 import pandas as pd
 import numpy as np
 
-# Adjust path to find backend modules
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 from src.core.backend.features.feature_engineering import WalletFeatureEngineer
 from src.core.backend.graph.graph_builder import TransactionGraphBuilder
@@ -115,6 +113,33 @@ class TestFeatureEngineer(unittest.TestCase):
         self.assertEqual(features_df.loc["wallet_C"]["total_tx_count"], 1)
         self.assertEqual(features_df.loc["wallet_C"]["total_sent"], 0.0)
         self.assertEqual(features_df.loc["wallet_C"]["total_received"], 9.0)
+
+    def test_send_and_receive_direction(self):
+        """Inputs are sends, outputs are receives."""
+        features_df = self.engineer.engineer_features(self.df, self.G)
+
+        # wallet_A only appears as an input: it sends
+        self.assertEqual(features_df.loc["wallet_A"]["outgoing_transaction_count"], 1)
+        self.assertEqual(features_df.loc["wallet_A"]["incoming_transaction_count"], 0)
+        # wallet_C only appears as an output: it receives
+        self.assertEqual(features_df.loc["wallet_C"]["outgoing_transaction_count"], 0)
+        self.assertEqual(features_df.loc["wallet_C"]["incoming_transaction_count"], 1)
+        # wallet_B receives at 12:00 and sends on at 12:10
+        self.assertEqual(features_df.loc["wallet_B"]["min_pass_through_gap"], 600.0)
+
+    def test_co_inputs_are_not_counterparties(self):
+        """Addresses spent together in one transaction are not each other's counterparties."""
+        row = dict(self.dummy_data[0], txid="tx3", timestamp="2026-08-25T13:00:00")
+        row["input_addresses[]"] = ["wallet_D", "wallet_E"]
+        row["input_amounts[]"] = [1.0, 2.0]
+        row["output_addresses[]"] = ["wallet_F"]
+        row["output_amounts[]"] = [2.9]
+        df = pd.DataFrame([row])
+        features_df = self.engineer.engineer_features(df)
+
+        self.assertEqual(features_df.loc["wallet_D"]["unique_counterparties"], 1)  # only F
+        self.assertEqual(features_df.loc["wallet_F"]["unique_counterparties"], 2)  # D and E
+        self.assertEqual(features_df.loc["wallet_E"]["total_sent"], 2.0)
 
 if __name__ == "__main__":
     unittest.main()

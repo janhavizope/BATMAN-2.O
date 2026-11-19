@@ -28,7 +28,8 @@ FEATURE_COLUMNS = [
 
 def get_data_dir() -> Path:
     """Return the dev-data directory containing parquet inputs."""
-    return Path(__file__).resolve().parents[2] / "data" / "dev"
+    from src.config import DEV_DATA_DIR
+    return DEV_DATA_DIR
 
 
 def normalize_wallet_column(df: pd.DataFrame, expected_name: str = "wallet_address") -> pd.DataFrame:

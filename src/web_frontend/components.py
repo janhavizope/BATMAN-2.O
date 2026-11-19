@@ -18,7 +18,7 @@ import streamlit as st
 @st.cache_data
 def get_font_css() -> str:
     """Read local font files and return @font-face CSS rules for offline usage."""
-    fonts_dir = Path(__file__).parent.parent / "resources" / "fonts"
+    from src.config import FONTS_DIR as fonts_dir
     orbitron_path = fonts_dir / "Orbitron.ttf"
     jb_path = fonts_dir / "JetBrainsMono.ttf"
 
@@ -50,17 +50,26 @@ def get_font_css() -> str:
     return "\n".join(css_parts)
 
 
+def _scores_date() -> str | None:
+    """Date the Elliptic++ score files were written, or None if they are missing."""
+    from datetime import datetime
+    from src.data import elliptic_source
+    if not elliptic_source.is_available():
+        return None
+    return datetime.fromtimestamp(elliptic_source.WALLET_SCORES.stat().st_mtime).strftime("%Y-%m-%d")
+
+
 def render_dev_badge() -> None:
-    """Display cybersecurity-style badge indicating live ML connection and data status."""
-    from src.data.data_manager import is_data_available
-    if is_data_available():
+    """Show where the displayed data comes from: precomputed scores, or none."""
+    scored_on = _scores_date()
+    if scored_on:
         st.markdown(
             "<div style=\"background-color:#0a1a0a; border:1px solid #153a15; "
             "border-left:3px solid #1a8b1a; border-radius:3px; padding:8px 14px; "
             "font-size:11px; font-family:'JetBrains Mono', Consolas, monospace; "
             "color:#1a8b1a; margin-bottom:14px; letter-spacing:0.5px;\">"
-            "<strong>[LIVE MODE] ML MODEL CONNECTED</strong> &mdash; "
-            "Data is being populated by the trained Random Forest inferences."
+            "<strong>[PRECOMPUTED SCORES]</strong> &mdash; "
+            f"Elliptic++ Random Forest risk scores, written {scored_on}. Not a live feed."
             "</div>",
             unsafe_allow_html=True,
         )
@@ -70,25 +79,24 @@ def render_dev_badge() -> None:
             "border-left:3px solid #ff4d4d; border-radius:3px; padding:8px 14px; "
             "font-size:11px; font-family:'JetBrains Mono', Consolas, monospace; "
             "color:#ff8888; margin-bottom:14px; letter-spacing:0.5px;\">"
-            "<strong>[STANDBY MODE] ML MODEL READY</strong> &mdash; "
-            "Random Forest model is loaded. No bundled dataset present. Ingest external transaction records to analyze."
+            "<strong>[NO SCORES]</strong> &mdash; "
+            "No risk scores found in data/elliptic_plus/. Run scripts/run_pipeline.py to create them."
             "</div>",
             unsafe_allow_html=True,
         )
 
 
 def render_dataset_notice() -> None:
-    """Display notice if no dataset is currently loaded."""
-    from src.data.data_manager import is_data_available
-    if not is_data_available():
+    """Display notice if no risk scores are available."""
+    if not _scores_date():
         st.markdown(
             "<div style=\"background-color:#0d0808; border:1px solid #4a1111; "
             "border-left:3px solid #b33939; border-radius:4px; padding:10px 14px; "
             "margin-bottom:16px; font-family:'JetBrains Mono', Consolas, monospace; "
             "font-size:11px; color:#d4d4d4; line-height:1.5;\">"
-            "<strong style='color:#ff4d4d;'>[DATASET REQUIRED]</strong> "
-            "All bundled sample and development datasets have been removed. "
-            "Provide an external Bitcoin transaction file (CSV/JSON) or connect a database to run anomaly detection."
+            "<strong style='color:#ff4d4d;'>[SCORES REQUIRED]</strong> "
+            "The score files in data/elliptic_plus/ are missing. Download the Elliptic and Elliptic++ "
+            "datasets (see README) and run scripts/run_pipeline.py."
             "</div>",
             unsafe_allow_html=True,
         )
@@ -105,21 +113,19 @@ def render_header(title: str | None = None) -> None:
         st.markdown(
             f"<div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:10px;'>"
             f"<div style='font-family:\"Orbitron\", sans-serif; font-size:24px; font-weight:bold; color:#e0e0e0; letter-spacing:4px;'>{title}</div>"
-            f"<div style='color:#22aa55; font-family:\"JetBrains Mono\", Consolas, monospace; font-size:11px; "
-            f"border:1px solid #22aa55; border-radius:3px; padding:4px 10px; font-weight:bold;'>SYSTEM ONLINE</div>"
             f"</div>",
             unsafe_allow_html=True,
         )
 
 
 def render_footer() -> None:
-    """Render the status bar footer matching the desktop status bar."""
-    from src.data.data_manager import is_data_available
-    data_status = "EXTERNAL_DATASET_LOADED" if is_data_available() else "NO_DATASET_LOADED"
+    """Render the status bar footer: which data the pages are showing."""
+    scored_on = _scores_date()
+    data_status = f"ELLIPTIC++ SCORES ({scored_on})" if scored_on else "NO SCORES LOADED"
     st.markdown(
         f"<div style='margin-top:40px; border-top:1px solid #3b0b0b; padding-top:8px; "
         f"color:#a52a2a; font-family:\"JetBrains Mono\", Consolas, monospace; font-size:11px; letter-spacing:1px;'>"
-        f"SYS_STATUS: ONLINE &nbsp;|&nbsp; {data_status}"
+        f"DATA: {data_status}"
         f"</div>",
         unsafe_allow_html=True,
     )

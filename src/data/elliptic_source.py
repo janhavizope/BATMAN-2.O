@@ -10,23 +10,33 @@ splits) are presented as predictions. Entities are wallets; the transaction
 graph comes from the Elliptic transaction flow edge list.
 """
 
+import numpy as np
 import networkx as nx
 import pandas as pd
-from pathlib import Path
+from sklearn.metrics import precision_recall_curve
 
-ROOT_DIR = Path(__file__).parent.parent.parent
-DATA_DIR = ROOT_DIR / "data" / "elliptic_plus"
+from src.config import ELLIPTIC_PLUS_DIR as DATA_DIR
+
 WALLET_SCORES = DATA_DIR / "wallet_scores.parquet"
 WALLET_TIMELINE = DATA_DIR / "wallet_timeline.parquet"
 WALLET_EXPLANATIONS = DATA_DIR / "wallet_explanations.parquet"
 TX_SCORES = DATA_DIR / "tx_scores.parquet"
 TX_EDGES = DATA_DIR / "tx_edges.parquet"
+WALLET_TX_EDGES = DATA_DIR / "wallet_tx_edges.parquet"
 
-FLAG_THRESHOLD = 0.5
+# Alert thresholds are chosen from the test-split precision-recall curve so
+# that at most this many wallets / transactions are flagged (see choose_threshold)
+WALLET_ALERT_BUDGET = 500
+TX_ALERT_BUDGET = 1_000
+# score_wallets.py stores timelines and explanations for wallets at or above 0.5
+MIN_WALLET_THRESHOLD = 0.5
+
 MAX_TRANSACTIONS = 10_000
 MAX_ENTITIES = 500
 MAX_EXPLAINED = 50
 GRAPH_SEEDS = 40
+GRAPH_ENTITIES = 10
+MAX_TXS_PER_ENTITY = 15
 
 _CACHE = {}
 
@@ -35,8 +45,52 @@ def is_available() -> bool:
     return all(p.exists() for p in (WALLET_SCORES, WALLET_TIMELINE, WALLET_EXPLANATIONS, TX_SCORES, TX_EDGES))
 
 
+def choose_threshold(scores: pd.DataFrame, budget: int, floor: float = 0.0) -> dict:
+    """Pick an alert threshold from the precision-recall curve of the test split.
+
+    Starts at the threshold with the best illicit F1 on held-out test rows and
+    raises it until at most `budget` rows the model did not train on are
+    flagged. Rows tied at the threshold are all flagged, so the count can
+    exceed the budget. Returns the threshold, the test precision and recall
+    it gives, and the number of rows it flags.
+    """
+    test = scores[scores["split"] == "test"]
+    pool = scores.loc[scores["split"] != "train", "risk"]
+    threshold = floor
+    if test["class"].eq("illicit").any() and test["class"].ne("illicit").any():
+        precision, recall, thresholds = precision_recall_curve(test["class"] == "illicit", test["risk"])
+        f1 = 2 * precision * recall / np.clip(precision + recall, 1e-12, None)
+        threshold = max(threshold, float(thresholds[np.argmax(f1[:-1])]))
+    if len(pool) > budget:
+        threshold = max(threshold, float(pool.nlargest(budget).min()))
+
+    flagged_test = test["risk"] >= threshold
+    illicit = test["class"] == "illicit"
+    return {
+        "threshold": threshold,
+        "precision": float((flagged_test & illicit).sum() / max(flagged_test.sum(), 1)),
+        "recall": float((flagged_test & illicit).sum() / max(illicit.sum(), 1)),
+        "flagged": int((pool >= threshold).sum()),
+        "budget": budget,
+    }
+
+
+def get_thresholds() -> dict:
+    """Wallet and transaction alert thresholds, with their test precision/recall."""
+    data = _load()
+    return {"wallet": data["wallet_threshold"], "transaction": data["tx_threshold"]}
+
+
+def _wallet_threshold() -> float:
+    return _load()["wallet_threshold"]["threshold"]
+
+
+def _tx_threshold() -> float:
+    return _load()["tx_threshold"]["threshold"]
+
+
 def _risk_level(risk: float) -> str:
-    return "Critical" if risk > 0.8 else "High" if risk > 0.6 else "Medium" if risk >= FLAG_THRESHOLD else "Low"
+    return "Critical" if risk > 0.8 else "High" if risk > 0.6 else "Medium" if risk >= _wallet_threshold() else "Low"
 
 
 def _step(time_step) -> str:
@@ -59,8 +113,10 @@ def _load():
         wallets = pd.read_parquet(WALLET_SCORES)
         txs = pd.read_parquet(TX_SCORES)
         _CACHE["wallets"] = wallets
+        _CACHE["wallet_threshold"] = choose_threshold(wallets, WALLET_ALERT_BUDGET, MIN_WALLET_THRESHOLD)
+        _CACHE["tx_threshold"] = choose_threshold(txs, TX_ALERT_BUDGET)
         _CACHE["flagged"] = (
-            wallets[(wallets["split"] != "train") & (wallets["risk"] >= FLAG_THRESHOLD)]
+            wallets[(wallets["split"] != "train") & (wallets["risk"] >= _CACHE["wallet_threshold"]["threshold"])]
             .sort_values(["risk", "total_txs"], ascending=False)
             .reset_index(drop=True)
         )
@@ -71,7 +127,22 @@ def _load():
         _CACHE["edges"] = pd.read_parquet(TX_EDGES)
         _CACHE["timeline"] = pd.read_parquet(WALLET_TIMELINE)
         _CACHE["explanations"] = pd.read_parquet(WALLET_EXPLANATIONS)
+        # Optional: which transactions each flagged wallet sent or received
+        if WALLET_TX_EDGES.exists():
+            _CACHE["wallet_tx"] = pd.read_parquet(WALLET_TX_EDGES)
+        else:
+            _CACHE["wallet_tx"] = pd.DataFrame(columns=["address", "txId", "direction"])
     return _CACHE
+
+
+def _wallet_transactions(address: str) -> pd.DataFrame:
+    """Transactions a wallet sent or received, with their model risk, newest first."""
+    data = _load()
+    links = data["wallet_tx"][data["wallet_tx"]["address"] == address]
+    return (
+        links.merge(data["txs"][["txId", "time_step", "risk", "class", "total_BTC"]], on="txId", how="left")
+        .sort_values(["time_step", "risk"], ascending=False)
+    )
 
 
 def _top_contributions(address: str, n: int = 5) -> pd.DataFrame:
@@ -123,7 +194,7 @@ def get_overview_stats():
 def get_activity_timeline():
     """Flagged (held-out or unlabelled) transactions per Elliptic time step."""
     txs = _load()["txs_eval"]
-    counts = txs[txs["risk"] >= FLAG_THRESHOLD].groupby("time_step").size()
+    counts = txs[txs["risk"] >= _tx_threshold()].groupby("time_step").size()
     counts = counts.reindex(range(int(txs["time_step"].min()), int(txs["time_step"].max()) + 1), fill_value=0)
     return [_step(t) for t in counts.index], counts.tolist()
 
@@ -144,6 +215,7 @@ def get_transactions_df():
     data = _load()
     if "transactions_df" not in data:
         txs = data["txs_eval"].head(MAX_TRANSACTIONS)
+        threshold = _tx_threshold()
         sources = _neighbours("target", "source")
         destinations = _neighbours("source", "target")
         data["transactions_df"] = pd.DataFrame({
@@ -152,7 +224,7 @@ def get_transactions_df():
             "Timestamp": txs["time_step"].map(_step),
             "Source": [_describe_links(sources.get(t, [])) for t in txs["txId"]],
             "Destination": [_describe_links(destinations.get(t, [])) for t in txs["txId"]],
-            "Flag": ["Suspicious" if r >= FLAG_THRESHOLD else "Normal" for r in txs["risk"]],
+            "Flag": ["Suspicious" if r >= threshold else "Normal" for r in txs["risk"]],
             "Risk (%)": (txs["risk"] * 100).round(1),
             "True Label": txs["class"],
         })
@@ -176,7 +248,7 @@ def get_tx_detail(tx_id: str):
         "confirmations": "N/A",
         "fee_btc": row["fees"],
         "block_height": f"N/A (Elliptic time step {int(row['time_step'])})",
-        "flag": "Suspicious" if row["risk"] >= FLAG_THRESHOLD else "Normal",
+        "flag": "Suspicious" if row["risk"] >= _tx_threshold() else "Normal",
         "reason": (f"Predicted probability of illicit: {row['risk']:.2f} "
                    f"(true label: {row['class']}, {row['split']} set)"),
     }
@@ -241,6 +313,17 @@ def get_entities():
                     for _, r in contributions.iterrows()
                 ],
                 "explanation": _reason(wallet, contributions),
+                "transactions": [
+                    {
+                        "Transaction ID": str(r["txId"]),
+                        "Direction": r["direction"],
+                        "Time step": "" if pd.isna(r["time_step"]) else _step(r["time_step"]),
+                        "Amount (BTC)": r["total_BTC"],
+                        "Risk (%)": None if pd.isna(r["risk"]) else round(r["risk"] * 100, 1),
+                        "True Label": r["class"],
+                    }
+                    for _, r in _wallet_transactions(addr).iterrows()
+                ],
             }
         data["entities"] = entities
     return data["entities"]
@@ -250,24 +333,59 @@ def get_entity_ids():
     return list(get_entities().keys())
 
 
-def get_graph_data():
-    data = _load()
+def _entity_graph(data):
+    """Top alerted wallets, the transactions they took part in, and the flows between those."""
+    wallets = data["flagged"].head(GRAPH_ENTITIES)
+    links = data["wallet_tx"][data["wallet_tx"]["address"].isin(wallets["address"])]
+    links = links.groupby("address").head(MAX_TXS_PER_ENTITY)
+    tx_ids = set(links["txId"])
+    risk = data["txs"].set_index("txId")["risk"]
+
+    nodes = [
+        {"id": a, "type": "Wallet", "label": a[:6], "risk_score": int(r * 100)}
+        for a, r in zip(wallets["address"], wallets["risk"])
+    ]
+    nodes += [
+        {"id": str(t), "type": "Transaction", "label": str(t)[:6], "risk_score": int(risk.get(t, 0) * 100)}
+        for t in tx_ids
+    ]
+    edge_list = [
+        {"source": a, "target": str(t), "relation": "sent"} if d == "sent"
+        else {"source": str(t), "target": a, "relation": "received"}
+        for a, t, d in zip(links["address"], links["txId"], links["direction"])
+    ]
+    flows = data["edges"][data["edges"]["source"].isin(tx_ids) & data["edges"]["target"].isin(tx_ids)]
+    edge_list += [{"source": str(s), "target": str(t), "relation": "funds"} for s, t in zip(flows["source"], flows["target"])]
+    return nodes, edge_list
+
+
+def _transaction_graph(data):
+    """Transaction-flow subgraph around the highest-risk transactions."""
     txs, edges = data["txs"], data["edges"]
     seeds = set(data["txs_eval"].head(GRAPH_SEEDS)["txId"])
     sub = edges[edges["source"].isin(seeds) | edges["target"].isin(seeds)]
     risk = txs.set_index("txId")["risk"]
+    node_ids = set(sub["source"]) | set(sub["target"]) | seeds
+    nodes = [
+        {"id": str(tx), "type": "Transaction", "label": str(tx)[:6], "risk_score": int(risk.get(tx, 0) * 100)}
+        for tx in node_ids
+    ]
+    edge_list = [{"source": str(s), "target": str(t), "relation": "funds"} for s, t in zip(sub["source"], sub["target"])]
+    return nodes, edge_list
+
+
+def get_graph_data():
+    """Graph around the top alerted wallets when wallet-transaction links exist,
+    otherwise the transaction-flow subgraph around the highest-risk transactions."""
+    data = _load()
+    if not data["wallet_tx"].empty:
+        nodes, edge_list = _entity_graph(data)
+    else:
+        nodes, edge_list = _transaction_graph(data)
 
     G = nx.Graph()
-    node_ids = set(sub["source"]) | set(sub["target"]) | seeds
-    nodes = []
-    for tx in node_ids:
-        score = int(risk.get(tx, 0) * 100)
-        G.add_node(str(tx))
-        nodes.append({"id": str(tx), "type": "Transaction", "label": str(tx)[:6], "risk_score": score})
-    edge_list = []
-    for s, t in zip(sub["source"], sub["target"]):
-        G.add_edge(str(s), str(t))
-        edge_list.append({"source": str(s), "target": str(t), "relation": "funds"})
+    G.add_nodes_from(n["id"] for n in nodes)
+    G.add_edges_from((e["source"], e["target"]) for e in edge_list)
 
     components = {n: i for i, comp in enumerate(nx.connected_components(G)) for n in comp}
     deg = dict(G.degree())

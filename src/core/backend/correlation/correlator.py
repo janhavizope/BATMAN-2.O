@@ -8,12 +8,10 @@ import os
 import pandas as pd
 from typing import Dict, Any
 
-# Dataset consumed by this pipeline. Edit here to switch between
-# the small (dev_dataset.csv) and large (dev_dataset_50k.csv) datasets.
-DATASET_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "data", "dev", "dev_dataset_50k.csv",
-)
+from src.config import DEV_DATASET
+
+# Dataset consumed by this pipeline
+DATASET_PATH = str(DEV_DATASET)
 
 class TransactionCorrelator:
     """

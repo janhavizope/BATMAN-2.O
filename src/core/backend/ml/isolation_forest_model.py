@@ -12,9 +12,7 @@ import numpy as np
 from pathlib import Path
 from sklearn.ensemble import IsolationForest
 
-# Ensure backend packages can be imported
-REPO_ROOT = Path(__file__).resolve().parents[4]
-sys.path.append(str(REPO_ROOT))
+from src.config import DEV_ANOMALY_SCORES, DEV_DATASET, DEV_FEATURES
 
 class TransactionAnomalyDetector:
     """
@@ -90,10 +88,9 @@ def load_wallet_entity_mapping(csv_path: str) -> dict:
     return wallet_to_entity
 
 def main():
-    REPO_ROOT = Path(__file__).resolve().parents[4]
-    features_path = str(REPO_ROOT / "data" / "dev" / "features.parquet")
-    csv_path = str(REPO_ROOT / "data" / "dev" / "dev_dataset_50k.csv")
-    output_path = str(REPO_ROOT / "data" / "dev" / "anomaly_scores.parquet")
+    features_path = str(DEV_FEATURES)
+    csv_path = str(DEV_DATASET)
+    output_path = str(DEV_ANOMALY_SCORES)
 
     if not os.path.exists(features_path):
         print(f"Error: features.parquet not found at {features_path}. Run feature engineering first.")

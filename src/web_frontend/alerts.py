@@ -2,12 +2,14 @@
 Alerts Page
 -----------
 Restores the desktop command-center visual layout:
-- ALERTS header + SYSTEM ONLINE badge
+- ALERTS header
 - Live mode DevBadge
 - Single-line Filter Bar: Level combo (All, Critical, High, Medium, Low) + Entity filter input
 - Technical Alert Feed table with red headers
 - Technical ALERT DETAIL monospaced panel
 """
+
+from html import escape
 
 import streamlit as st
 import pandas as pd
@@ -92,10 +94,10 @@ def render_alerts() -> None:
             st.markdown(
                 f"<div style='background-color:#111118; border:1px solid #2a0a0a; border-radius:4px; padding:14px; "
                 f"font-family:\"JetBrains Mono\", Consolas, monospace; font-size:12px; color:#c0c0c0; line-height:1.7;'>"
-                f"<strong>Entity:</strong>&nbsp;&nbsp;&nbsp;&nbsp;{full_id}<br>"
+                f"<strong>Entity:</strong>&nbsp;&nbsp;&nbsp;&nbsp;{escape(str(full_id))}<br>"
                 f"<strong>Risk:</strong>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{risk_score}/100<br>"
-                f"<strong>Level:</strong>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{risk_level}<br>"
-                f"<strong>Reason:</strong>&nbsp;&nbsp;&nbsp;&nbsp;{main_reason}"
+                f"<strong>Level:</strong>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{escape(str(risk_level))}<br>"
+                f"<strong>Reason:</strong>&nbsp;&nbsp;&nbsp;&nbsp;{escape(str(main_reason))}"
                 f"</div>",
                 unsafe_allow_html=True,
             )

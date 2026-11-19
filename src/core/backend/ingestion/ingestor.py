@@ -10,8 +10,8 @@ from typing import Tuple, Dict, Any
 from src.core.backend.validation.validator import TransactionValidator
 
 class TransactionIngestor:
-    def __init__(self):
-        self.validator = TransactionValidator()
+    def __init__(self, require_hex_txid: bool = True):
+        self.validator = TransactionValidator(require_hex_txid=require_hex_txid)
 
     def detect_format_and_load(self, file_path: str) -> pd.DataFrame:
         """
@@ -87,13 +87,10 @@ if __name__ == "__main__":
     
     # Simple test CLI runner
     # Defaulting to the dev dataset generated in Step 1
-    default_dev_path = os.path.join("bitcoin-monitor", "data", "dev", "dev_dataset.csv")
+    from src.config import DEV_DATASET
+    default_dev_path = str(DEV_DATASET)
     path_to_load = sys.argv[1] if len(sys.argv) > 1 else default_dev_path
     
-    # Adjust paths if run from different working directories
-    if not os.path.exists(path_to_load) and os.path.exists(os.path.join("..", "..", "data", "dev", "dev_dataset.csv")):
-        path_to_load = os.path.join("..", "..", "data", "dev", "dev_dataset.csv")
-        
     print(f"Running Ingestion on: {path_to_load} ...")
     try:
         ingestor = TransactionIngestor()

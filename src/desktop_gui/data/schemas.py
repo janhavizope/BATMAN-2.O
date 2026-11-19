@@ -28,10 +28,12 @@ class OverviewStats:
         anomalous_entities: int = 0,
         high_risk_entities: int = 0,
         critical_alerts: int = 0,
+        known_illicit: int = 0,
     ):
         self.total_transactions = total_transactions
         self.total_wallets = total_wallets
         self.total_ips = total_ips
+        self.known_illicit = known_illicit
         self.anomalous_entities = anomalous_entities
         self.high_risk_entities = high_risk_entities
         self.critical_alerts = critical_alerts
@@ -44,6 +46,7 @@ class OverviewStats:
             "anomalous_entities": self.anomalous_entities,
             "high_risk_entities": self.high_risk_entities,
             "critical_alerts": self.critical_alerts,
+            "known_illicit": self.known_illicit,
         }
 
     @classmethod
@@ -55,6 +58,7 @@ class OverviewStats:
             anomalous_entities=int(d.get("anomalous_entities", 0)),
             high_risk_entities=int(d.get("high_risk_entities", 0)),
             critical_alerts=int(d.get("critical_alerts", 0)),
+            known_illicit=int(d.get("known_illicit", 0)),
         )
 
 

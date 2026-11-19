@@ -12,10 +12,13 @@ import numpy as np
 from typing import Tuple, Dict, Any
 
 REQUIRED_COLUMNS = [
-    "timestamp", "src_ip", "dst_ip", "src_port", "dst_port", "txid",
+    "timestamp", "txid",
     "input_addresses[]", "output_addresses[]", "input_amounts[]", "output_amounts[]",
-    "geo_country", "asn"
 ]
+
+# Network metadata. Real on-chain data has none of these, so they are optional:
+# a missing column is added as empty, and an empty value is not an error.
+NETWORK_COLUMNS = ["src_ip", "dst_ip", "src_port", "dst_port", "geo_country", "asn"]
 
 RECOMMENDED_COLUMNS = [
     "fee", "script_type", "block_height", "block_timestamp", "connection_duration", "entity_id"
@@ -25,15 +28,18 @@ RECOMMENDED_COLUMNS = [
 TXID_REGEX = re.compile(r"^[0-9a-fA-F]{64}$")
 
 class TransactionValidator:
-    def __init__(self):
-        pass
+    def __init__(self, require_hex_txid: bool = True):
+        # Real Bitcoin txids are 64 hex characters; datasets such as Elliptic
+        # use anonymised integer ids instead.
+        self.require_hex_txid = require_hex_txid
         
     def parse_array_field(self, val: Any) -> list:
         """Helper to parse list/array fields from JSON strings, lists, or nan."""
-        if pd.isna(val):
-            return []
+        # Lists first: pd.isna() on a multi-element list returns an array
         if isinstance(val, (list, np.ndarray)):
             return list(val)
+        if pd.isna(val):
+            return []
         if isinstance(val, str):
             val_str = val.strip()
             if not val_str:
@@ -107,8 +113,8 @@ class TransactionValidator:
             report["invalid_records"] = len(working_df)
             raise ValueError(f"Input DataFrame is missing required columns: {missing_required}")
             
-        # Ensure recommended columns exist, initialize them as NaN if not present
-        for col in RECOMMENDED_COLUMNS:
+        # Ensure optional columns exist, initialize them as NaN if not present
+        for col in NETWORK_COLUMNS + RECOMMENDED_COLUMNS:
             if col not in working_df.columns:
                 working_df[col] = np.nan
                 
@@ -149,24 +155,24 @@ class TransactionValidator:
             is_valid = True
             reasons = []
             
-            # Validate IP formats
-            if not self.is_valid_ip(row["src_ip"]) or not self.is_valid_ip(row["dst_ip"]):
+            # Validate IP formats (when present)
+            ips = [row[c] for c in ("src_ip", "dst_ip") if not pd.isna(row[c])]
+            if not all(self.is_valid_ip(ip) for ip in ips):
                 is_valid = False
                 reasons.append("invalid_ip_format")
-                
-            # Validate Ports
+
+            # Validate Ports (when present)
             try:
-                src_port = int(row["src_port"])
-                dst_port = int(row["dst_port"])
-                if not (1 <= src_port <= 65535) or not (1 <= dst_port <= 65535):
+                ports = [int(row[c]) for c in ("src_port", "dst_port") if not pd.isna(row[c])]
+                if not all(1 <= port <= 65535 for port in ports):
                     is_valid = False
                     reasons.append("invalid_port_range")
             except (ValueError, TypeError):
                 is_valid = False
                 reasons.append("invalid_port_range")
-                
+
             # Validate txid format
-            if not isinstance(row["txid"], str) or not TXID_REGEX.match(row["txid"]):
+            if self.require_hex_txid and (not isinstance(row["txid"], str) or not TXID_REGEX.match(row["txid"])):
                 is_valid = False
                 reasons.append("invalid_txid_format")
                 

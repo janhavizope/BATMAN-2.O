@@ -58,10 +58,35 @@ class TestTransactionPipeline(unittest.TestCase):
     def test_missing_required_columns(self):
         """Test that missing required columns raises a ValueError."""
         df = pd.DataFrame([self.valid_row])
-        df = df.drop(columns=["src_ip"]) # src_ip is required
-        
+        df = df.drop(columns=["input_addresses[]"]) # address lists are required
+
         with self.assertRaises(ValueError):
             self.validator.validate(df)
+
+    def test_multi_element_list_fields(self):
+        """Array fields given as Python lists with several elements are accepted."""
+        row = dict(self.valid_row)
+        row["input_addresses[]"] = ["walletA", "walletB"]
+        row["input_amounts[]"] = [0.5, 0.501]
+        clean_df, report = self.validator.validate(pd.DataFrame([row]))
+        self.assertEqual(report["valid_records"], 1)
+        self.assertEqual(clean_df.iloc[0]["input_addresses[]"], ["walletA", "walletB"])
+
+    def test_network_fields_are_optional(self):
+        """On-chain data without IP / port / ASN / country fields is valid."""
+        df = pd.DataFrame([self.valid_row]).drop(
+            columns=["src_ip", "dst_ip", "src_port", "dst_port", "geo_country", "asn"]
+        )
+        clean_df, report = self.validator.validate(df)
+        self.assertEqual(report["valid_records"], 1)
+
+    def test_integer_txids_allowed_when_not_strict(self):
+        """Datasets with anonymised integer txids can opt out of the hex check."""
+        row = dict(self.valid_row, txid="230425980")
+        _, strict = self.validator.validate(pd.DataFrame([row]))
+        _, lenient = TransactionValidator(require_hex_txid=False).validate(pd.DataFrame([row]))
+        self.assertEqual(strict["valid_records"], 0)
+        self.assertEqual(lenient["valid_records"], 1)
 
     def test_missing_critical_fields(self):
         """Test that missing critical fields (txid, timestamp) drops the records."""

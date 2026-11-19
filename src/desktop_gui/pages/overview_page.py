@@ -35,12 +35,6 @@ class OverviewPage(QWidget):
         title.setStyleSheet("color: #e0e0e0; letter-spacing: 4px;")
         header_row.addWidget(title)
         header_row.addStretch()
-        status = QLabel("SYSTEM ONLINE")
-        status.setStyleSheet(
-            "color: #22aa55; font-family: Consolas; font-size: 11px; "
-            "border: 1px solid #22aa55; border-radius: 3px; padding: 4px 10px;"
-        )
-        header_row.addWidget(status)
         layout.addLayout(header_row)
 
         layout.addWidget(DevBadge())
@@ -55,7 +49,7 @@ class OverviewPage(QWidget):
         charts_row.setSpacing(16)
 
         right_chart_container = QVBoxLayout()
-        right_label = QLabel("Alerts over time (7d)")
+        right_label = QLabel("Flagged transactions per time step")
         right_label.setStyleSheet("color: #c0c0c0; font-family: 'Orbitron', sans-serif; font-size: 13px; font-weight: bold;")
         right_chart_container.addWidget(right_label)
         self.activity_chart = ActivityTimelineChart()
@@ -99,7 +93,7 @@ class OverviewPage(QWidget):
         card_specs = [
             ("TOTAL TRANSACTIONS", f"{d['total_transactions']:,}"),
             ("TOTAL WALLETS",      f"{d['total_wallets']:,}"),
-            ("TOTAL IPS",          f"{d['total_ips']:,}"),
+            ("KNOWN ILLICIT",      f"{d['known_illicit']:,}"),
             ("ANOMALOUS",          f"{d['anomalous_entities']:,}"),
             ("HIGH-RISK",          f"{d['high_risk_entities']:,}"),
             ("CRITICAL ALERTS",    f"{d['critical_alerts']:,}"),
@@ -115,20 +109,9 @@ class OverviewPage(QWidget):
                 risk_counts[a.risk_level] += 1
         self.risk_chart.render_chart(risk_counts)
 
-        # Activity timeline chart — use transaction timestamps
-        txns = self._dm.get_transactions()
-        time_buckets: dict[str, int] = {}
-        for t in txns:
-            ts = t.timestamp
-            if " " in ts:
-                hour = ts.split(" ")[1][:2] + ":00"
-            else:
-                hour = ts[:5]
-            time_buckets[hour] = time_buckets.get(hour, 0) + 1
-
-        sorted_times = sorted(time_buckets.keys())
-        counts = [time_buckets[t] for t in sorted_times]
-        self.activity_chart.render_chart(sorted_times, counts)
+        # Activity timeline chart — flagged transactions per Elliptic time step
+        labels, counts = self._dm.get_activity_timeline()
+        self.activity_chart.render_chart(labels, counts)
 
         # Alerts summary
         top_alerts = alerts[:3]

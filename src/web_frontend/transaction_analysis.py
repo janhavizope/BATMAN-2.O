@@ -2,7 +2,7 @@
 Transaction Analysis Page
 -------------------------
 Restores the desktop command-center visual layout:
-- TRANSACTION ANALYSIS header + SYSTEM ONLINE badge
+- TRANSACTION ANALYSIS header
 - Live mode DevBadge
 - Embedded Attack Graph canvas
 - Cybersecurity DataTable with red headers
@@ -10,6 +10,8 @@ Restores the desktop command-center visual layout:
 - Monospaced Extended Details panel
 - Bottom filter controls & Export actions (CSV, HTML)
 """
+
+from html import escape
 
 import streamlit as st
 import pandas as pd
@@ -180,10 +182,10 @@ def render_transaction_analysis() -> None:
         st.markdown(
             f"<div style='background-color:#111118; border:1px solid #2a0a0a; border-radius:4px; padding:12px; margin-top:10px; "
             f"font-family:\"JetBrains Mono\", Consolas, monospace; font-size:11px; color:#c0c0c0; line-height:1.6;'>"
-            f"<strong>Source:</strong> {tx_row['Source']}<br>"
-            f"<strong>Destination:</strong> {tx_row['Destination']}<br>"
-            f"<strong>Confirmations:</strong> {conf} &nbsp;|&nbsp; <strong>Fee:</strong> {fee:.8f} BTC &nbsp;|&nbsp; <strong>Block:</strong> {block}<br>"
-            f"<strong>Reason:</strong> {reason}"
+            f"<strong>Source:</strong> {escape(str(tx_row['Source']))}<br>"
+            f"<strong>Destination:</strong> {escape(str(tx_row['Destination']))}<br>"
+            f"<strong>Confirmations:</strong> {conf} &nbsp;|&nbsp; <strong>Fee:</strong> {fee:.8f} BTC &nbsp;|&nbsp; <strong>Block:</strong> {escape(str(block))}<br>"
+            f"<strong>Reason:</strong> {escape(str(reason))}"
             f"</div>",
             unsafe_allow_html=True,
         )

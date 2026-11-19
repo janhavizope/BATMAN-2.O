@@ -1,20 +1,29 @@
 """
 Dev Badge Widget
 ----------------
-Cybersecurity-style warning banner for development/placeholder data.
+Banner stating which data the desktop pages are showing.
 """
 
 from PySide6.QtWidgets import QLabel
 from PySide6.QtCore import Qt
 
+from datetime import datetime
+
+from src.data import elliptic_source
+
+
+def data_status() -> str:
+    """One-line description of the loaded data, based on what is on disk."""
+    if elliptic_source.is_available():
+        scored_on = datetime.fromtimestamp(elliptic_source.WALLET_SCORES.stat().st_mtime).strftime("%Y-%m-%d")
+        return f"[PRECOMPUTED SCORES] Elliptic++ Random Forest risk scores, written {scored_on}. Not a live feed."
+    return "[NO SCORES] No risk scores found in data/elliptic_plus/: run scripts/run_pipeline.py"
+
 
 class DevBadge(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setText(
-            "  [LIVE MODE] ML MODEL CONNECTED  "
-            "— Data is being populated by the trained Random Forest inferences."
-        )
+        self.setText(f"  {data_status()}  ")
         self.setStyleSheet(
             "QLabel {"
             "  background-color: #0a1a0a;"

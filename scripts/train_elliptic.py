@@ -9,11 +9,13 @@ Steps:
     1. Load features + labels from data/elliptic/
     2. Keep only labelled transactions (class 1 = illicit, 2 = licit;
        "unknown" rows have no ground truth and are dropped)
-    3. Stratified 80/20 train/test split
+    3. Temporal train/test split: train on time steps 1-34, test on 35-49
+       (the standard Elliptic benchmark split). time_step itself is not a
+       model input, so the model cannot learn *when* a transaction happened.
     4. Train RandomForestClassifier (class_weight="balanced" because only
        ~10% of labelled transactions are illicit)
-    5. Evaluate on the held-out 20%: precision/recall/F1, confusion matrix,
-       ROC-AUC
+    5. Evaluate on time steps 35-49: precision/recall/F1, confusion matrix,
+       ROC-AUC, and illicit-class F1 per time step
     6. Save model + metrics to models/ and outputs/evaluation/
     7. Save graphs to outputs/graphs/elliptic/
 
@@ -22,12 +24,14 @@ Run (from the project root):
 """
 
 import json
+import sys
 from pathlib import Path
 
 import joblib
 import matplotlib
 matplotlib.use("Agg")  # save to files, no window needed
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import seaborn as sns
 from sklearn.ensemble import RandomForestClassifier
@@ -37,21 +41,41 @@ from sklearn.metrics import (
     accuracy_score,
     classification_report,
     confusion_matrix,
+    f1_score,
     roc_auc_score,
 )
-from sklearn.model_selection import train_test_split
 
-ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from src.config import EVALUATION_DIR, GRAPHS_DIR as GRAPHS_ROOT, MODELS_DIR, ROOT_DIR
+
+ROOT = ROOT_DIR
 DATA_DIR = ROOT / "data" / "elliptic"
 FEATURES_FILE = DATA_DIR / "elliptic_txs_features.csv"
 CLASSES_FILE = DATA_DIR / "elliptic_txs_classes.csv"
-MODEL_DIR = ROOT / "models"
+MODEL_DIR = MODELS_DIR
 MODEL_FILE = MODEL_DIR / "elliptic_rf_model.joblib"
-METRICS_FILE = ROOT / "outputs" / "evaluation" / "elliptic_metrics.json"
-GRAPHS_DIR = ROOT / "outputs" / "graphs" / "elliptic"
+METRICS_FILE = EVALUATION_DIR / "elliptic_metrics.json"
+GRAPHS_DIR = GRAPHS_ROOT / "elliptic"
 
-TEST_SIZE = 0.20
+# Temporal split: train on time steps 1..TRAIN_LAST_STEP, test on the rest
+TRAIN_LAST_STEP = 34
+TEST_LABEL = f"test: time steps {TRAIN_LAST_STEP + 1}+"
 RANDOM_STATE = 42
+
+
+def temporal_split(X, y, time_steps):
+    """Train on rows from time steps <= TRAIN_LAST_STEP, test on later rows."""
+    train = (time_steps <= TRAIN_LAST_STEP).to_numpy()
+    return X[train], X[~train], y[train], y[~train]
+
+
+def f1_by_time_step(y_test, y_pred, time_steps):
+    """Illicit-class F1 for each time step of the test set."""
+    frame = pd.DataFrame({"y": y_test.to_numpy(), "pred": y_pred, "step": time_steps.to_numpy()})
+    return {
+        int(step): float(f1_score(g["y"], g["pred"], zero_division=0))
+        for step, g in frame.groupby("step")
+    }
 
 
 def load_data():
@@ -64,9 +88,10 @@ def load_data():
     df = features.merge(classes, on="txId")
     df = df[df["class"] != "unknown"]
 
-    X = df.drop(columns=["txId", "class"])
+    # time_step is only used for the split, never as a feature
+    X = df.drop(columns=["txId", "class", "time_step"])
     y = (df["class"] == "1").astype(int)  # 1 = illicit, 0 = licit
-    return X, y
+    return X, y, df["time_step"]
 
 
 def save_graphs(y, y_test, y_pred, y_prob, cm, report, importances, graphs_dir=GRAPHS_DIR):
@@ -92,7 +117,7 @@ def save_graphs(y, y_test, y_pred, y_prob, cm, report, importances, graphs_dir=G
                 xticklabels=labels, yticklabels=labels, ax=ax)
     ax.set_xlabel("Predicted")
     ax.set_ylabel("Actual")
-    ax.set_title("Confusion matrix (20% test set)")
+    ax.set_title(f"Confusion matrix ({TEST_LABEL})")
     fig.tight_layout()
     fig.savefig(graphs_dir / "confusion_matrix.png", dpi=150)
     plt.close(fig)
@@ -123,7 +148,7 @@ def save_graphs(y, y_test, y_pred, y_prob, cm, report, importances, graphs_dir=G
     ax = metrics.plot(kind="bar", figsize=(6, 4), color=["#4C72B0", "#C44E52"], rot=0)
     ax.set_ylim(0, 1.25)
     ax.legend(loc="upper center", ncol=2)
-    ax.set_title("Metrics per class (20% test set)")
+    ax.set_title(f"Metrics per class ({TEST_LABEL})")
     for container in ax.containers:
         ax.bar_label(container, fmt="%.2f")
     ax.figure.tight_layout()
@@ -157,16 +182,49 @@ def save_graphs(y, y_test, y_pred, y_prob, cm, report, importances, graphs_dir=G
     print(f"Graphs saved to {graphs_dir}")
 
 
+def evaluate(model, X_test, y_test, test_steps):
+    """Return the metrics dict saved to outputs/evaluation, plus predictions."""
+    y_pred = model.predict(X_test)
+    y_prob = model.predict_proba(X_test)[:, 1]
+    report = classification_report(
+        y_test, y_pred, labels=[0, 1], target_names=["licit", "illicit"],
+        output_dict=True, zero_division=0,
+    )
+    metrics = {
+        "split": f"temporal: train steps 1-{TRAIN_LAST_STEP}, test steps {TRAIN_LAST_STEP + 1}+",
+        "test_rows": len(X_test),
+        "accuracy": accuracy_score(y_test, y_pred),
+        "roc_auc": roc_auc_score(y_test, y_prob) if y_test.nunique() == 2 else None,
+        "confusion_matrix": confusion_matrix(y_test, y_pred, labels=[0, 1]).tolist(),
+        "classification_report": report,
+        "f1_illicit_by_time_step": f1_by_time_step(y_test, y_pred, test_steps),
+    }
+    return metrics, y_pred, y_prob
+
+
+def print_metrics(metrics):
+    illicit = metrics["classification_report"]["illicit"]
+    print(f"\n=== Results on the {TEST_LABEL} ===")
+    print(f"Accuracy:            {metrics['accuracy']:.4f}")
+    print(f"ROC-AUC:             {metrics['roc_auc']:.4f}")
+    print(f"Illicit precision:   {illicit['precision']:.4f}")
+    print(f"Illicit recall:      {illicit['recall']:.4f}")
+    print(f"Illicit F1:          {illicit['f1-score']:.4f}")
+    print("Confusion matrix (rows = actual, cols = predicted) [licit, illicit]:")
+    print(metrics["confusion_matrix"])
+    print("Illicit F1 per time step:")
+    print({step: round(f1, 2) for step, f1 in metrics["f1_illicit_by_time_step"].items()})
+
+
 def main():
     print(f"Loading data from {DATA_DIR} ...")
-    X, y = load_data()
+    X, y, time_steps = load_data()
     print(f"Labelled transactions: {len(X)}  |  features: {X.shape[1]}")
     print(f"Illicit: {y.sum()}  |  Licit: {(y == 0).sum()}\n")
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=TEST_SIZE, stratify=y, random_state=RANDOM_STATE
-    )
-    print(f"Train: {len(X_train)} rows (80%)  |  Test: {len(X_test)} rows (20%)\n")
+    X_train, X_test, y_train, y_test = temporal_split(X, y, time_steps)
+    print(f"Train: {len(X_train)} rows (steps 1-{TRAIN_LAST_STEP})  |  "
+          f"Test: {len(X_test)} rows (steps {TRAIN_LAST_STEP + 1}+)\n")
 
     print("Training Random Forest ...")
     model = RandomForestClassifier(
@@ -177,22 +235,8 @@ def main():
     )
     model.fit(X_train, y_train)
 
-    y_pred = model.predict(X_test)
-    y_prob = model.predict_proba(X_test)[:, 1]
-
-    accuracy = accuracy_score(y_test, y_pred)
-    roc_auc = roc_auc_score(y_test, y_prob)
-    cm = confusion_matrix(y_test, y_pred)
-    report = classification_report(
-        y_test, y_pred, target_names=["licit", "illicit"], output_dict=True
-    )
-
-    print("\n=== Results on the 20% test set ===")
-    print(classification_report(y_test, y_pred, target_names=["licit", "illicit"]))
-    print(f"Accuracy: {accuracy:.4f}")
-    print(f"ROC-AUC:  {roc_auc:.4f}")
-    print("Confusion matrix (rows = actual, cols = predicted) [licit, illicit]:")
-    print(cm)
+    metrics, y_pred, y_prob = evaluate(model, X_test, y_test, time_steps.loc[X_test.index])
+    print_metrics(metrics)
 
     importances = pd.Series(model.feature_importances_, index=X.columns)
     top = importances.sort_values(ascending=False).head(10)
@@ -204,18 +248,13 @@ def main():
     print(f"\nModel saved to {MODEL_FILE}")
 
     METRICS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    METRICS_FILE.write_text(json.dumps({
-        "train_rows": len(X_train),
-        "test_rows": len(X_test),
-        "accuracy": accuracy,
-        "roc_auc": roc_auc,
-        "confusion_matrix": cm.tolist(),
-        "classification_report": report,
-        "top_features": top.to_dict(),
-    }, indent=2))
+    METRICS_FILE.write_text(json.dumps(
+        {"train_rows": len(X_train), **metrics, "top_features": top.to_dict()}, indent=2
+    ))
     print(f"Metrics saved to {METRICS_FILE}")
 
-    save_graphs(y, y_test, y_pred, y_prob, cm, report, importances)
+    save_graphs(y, y_test, y_pred, y_prob, np.asarray(metrics["confusion_matrix"]),
+                metrics["classification_report"], importances)
 
 
 if __name__ == "__main__":

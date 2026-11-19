@@ -2,12 +2,14 @@
 Overview Page
 -------------
 High-level dashboard matching original BATMAN desktop GUI aesthetic:
-- DASHBOARD OVERVIEW title + SYSTEM ONLINE indicator
-- [LIVE MODE] DevBadge
+- DASHBOARD OVERVIEW title
+- Data source badge (precomputed scores)
 - 6 Dark KPI metric cards with thin red borders and Orbitron numbers
 - Responsive charts: "Alerts over time (7d)" (neon green #21d093) + "Severity Distribution" donut
 - RECENT ALERTS technical monospace summary panel
 """
+
+from html import escape
 
 import streamlit as st
 import pandas as pd
@@ -18,7 +20,7 @@ from src.data.data_manager import get_overview_stats, get_alerts_df
 
 
 def render_overview() -> None:
-    # Top header with title and SYSTEM ONLINE badge
+    # Top header with title
     render_header("DASHBOARD OVERVIEW")
     render_dev_badge()
     from src.web_frontend.components import render_dataset_notice
@@ -163,10 +165,10 @@ def render_overview() -> None:
             level = row.get('Risk Level', 'High')
             eid = row.get('Full Entity ID', row.get('Entity ID', 'Unknown'))
             reason = row.get('Main Reason', 'anomaly detected')
-            alert_lines.append(f"[{level}] {eid}  &mdash;  {reason}")
+            alert_lines.append(f"[{escape(str(level))}] {escape(str(eid))}  &mdash;  {escape(str(reason))}")
         alerts_html = "<br>".join(alert_lines)
     else:
-        alerts_html = "[INFO] No alerts available &mdash; Ingest an external Bitcoin transaction dataset to begin analysis."
+        alerts_html = "[INFO] No alerts available &mdash; no risk scores found in data/elliptic_plus/."
 
     st.markdown(
         f"<div style='background-color:#111118; border:1px solid #2a0a0a; border-radius:4px; padding:12px; "

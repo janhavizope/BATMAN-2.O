@@ -10,14 +10,10 @@ trained wallets Random Forest (scripts/score_wallets.py):
   typical licit / illicit wallets
 """
 
-from pathlib import Path
-
 import pandas as pd
 import streamlit as st
+from src.data.elliptic_source import WALLET_SCORES as SCORES_FILE, get_thresholds
 from src.web_frontend.components import render_header, render_metric_card
-
-ROOT = Path(__file__).resolve().parent.parent.parent
-SCORES_FILE = ROOT / "data" / "elliptic_plus" / "wallet_scores.parquet"
 
 GROUPS = {
     "Unlabelled wallets (new predictions)": "unknown",
@@ -50,7 +46,14 @@ def render_wallet_scanner() -> None:
     scores = load_scores()
     feature_cols = [c for c in scores.columns if c not in ("address", "time_step", "class", "risk", "split")]
 
-    threshold = st.slider("Risk threshold (flag wallets at or above)", 0.05, 0.95, 0.50, 0.05)
+    alert = get_thresholds()["wallet"]
+    threshold = st.slider("Risk threshold (flag wallets at or above)", 0.05, 1.0,
+                          round(alert["threshold"], 2), 0.01)
+    st.caption(
+        f"Default {alert['threshold']:.2f} is the alert threshold, chosen from the test-set "
+        f"precision-recall curve to keep alerts near {alert['budget']:,} wallets. "
+        f"On test wallets it gives precision {alert['precision']:.0%} and recall {alert['recall']:.0%}."
+    )
 
     unknown = scores[scores["split"] == "unknown"]
     c1, c2, c3, c4 = st.columns(4)

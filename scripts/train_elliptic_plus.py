@@ -10,12 +10,17 @@ Trains Random Forest classifiers on the Elliptic++ dataset
 Steps (same as train_elliptic.py):
     1. Load data from data/elliptic_plus/
     2. Keep only labelled rows (class 1 = illicit, 2 = licit; 3 = unknown is dropped)
-    3. Stratified 80/20 train/test split. Wallets appear once per time step,
-       so they are split by address: every row of a wallet lands on the same
-       side, and the model is never tested on a wallet it trained on.
-    4. Train RandomForestClassifier (class_weight="balanced")
-    5. Evaluate on the held-out 20%
-    6. Save model, metrics and graphs
+    3. Temporal train/test split: train on time steps 1-34, test on 35-49.
+       Wallets appear once per time step, so they are split by the time step
+       they first appear in: a wallet first seen in steps 1-34 is a training
+       wallet (only its rows up to step 34 are used), a wallet first seen in
+       step 35 or later is a test wallet. The model is never tested on a
+       wallet it trained on, and never trains on data from the test period.
+    4. Drop time-revealing features (the time step, and the wallet
+       block-number features) so the model learns behaviour, not timing
+    5. Train RandomForestClassifier (class_weight="balanced")
+    6. Evaluate on the test period, including illicit F1 per time step
+    7. Save model, metrics and graphs
 
 Run (from the project root):
     python scripts/train_elliptic_plus.py            # both datasets
@@ -27,21 +32,25 @@ import json
 import sys
 
 import joblib
+import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import (
-    accuracy_score,
-    classification_report,
-    confusion_matrix,
-    roc_auc_score,
+
+from train_elliptic import (
+    MODEL_DIR, RANDOM_STATE, TRAIN_LAST_STEP, evaluate, print_metrics, save_graphs,
 )
-from sklearn.model_selection import StratifiedGroupKFold, train_test_split
+from src.config import ELLIPTIC_PLUS_DIR, EVALUATION_DIR, GRAPHS_DIR
 
-from train_elliptic import MODEL_DIR, RANDOM_STATE, ROOT, TEST_SIZE, save_graphs
+DATA_DIR = ELLIPTIC_PLUS_DIR
+EVAL_DIR = EVALUATION_DIR
+GRAPHS_ROOT = GRAPHS_DIR / "elliptic_plus"
 
-DATA_DIR = ROOT / "data" / "elliptic_plus"
-EVAL_DIR = ROOT / "outputs" / "evaluation"
-GRAPHS_ROOT = ROOT / "outputs" / "graphs" / "elliptic_plus"
+TIME_COLUMN = "Time step"
+# Absolute block numbers say *when* a wallet was active, not how it behaves
+WALLET_TIME_FEATURES = [
+    "first_block_appeared_in", "last_block_appeared_in",
+    "first_sent_block", "first_received_block",
+]
 
 
 def load_txs():
@@ -50,9 +59,9 @@ def load_txs():
     df = features.merge(classes, on="txId")
     df = df[df["class"] != 3]
 
-    X = df.drop(columns=["txId", "class"])
+    X = df.drop(columns=["txId", "class", TIME_COLUMN])
     y = (df["class"] == 1).astype(int)  # 1 = illicit, 0 = licit
-    return X, y, None
+    return X, y, None, df[TIME_COLUMN]
 
 
 def load_wallets():
@@ -60,34 +69,35 @@ def load_wallets():
     df = df[df["class"] != 3]
 
     groups = df["address"]
-    X = df.drop(columns=["address", "class"])
+    X = df.drop(columns=["address", "class", TIME_COLUMN] + WALLET_TIME_FEATURES, errors="ignore")
     y = (df["class"] == 1).astype(int)
-    return X, y, groups
+    return X, y, groups, df[TIME_COLUMN]
 
 
-def split(X, y, groups):
+def split(X, y, groups, time_steps):
+    """Temporal split. With groups (wallets), each group goes to one side only."""
+    train = time_steps <= TRAIN_LAST_STEP
     if groups is None:
-        return train_test_split(
-            X, y, test_size=TEST_SIZE, stratify=y, random_state=RANDOM_STATE
-        )
-    # 5 folds -> one fold is 20% of the wallets; use it as the test set
-    cv = StratifiedGroupKFold(n_splits=round(1 / TEST_SIZE), shuffle=True, random_state=RANDOM_STATE)
-    train_idx, test_idx = next(cv.split(X, y, groups))
-    return X.iloc[train_idx], X.iloc[test_idx], y.iloc[train_idx], y.iloc[test_idx]
+        test = ~train
+    else:
+        first_step = time_steps.groupby(groups).transform("min")
+        test = first_step > TRAIN_LAST_STEP
+    train, test = train.to_numpy(), test.to_numpy()
+    return X[train], X[test], y[train], y[test]
 
 
 def train(name, loader):
     print(f"\n{'=' * 60}\n  Elliptic++ {name}\n{'=' * 60}")
-    X, y, groups = loader()
+    X, y, groups, time_steps = loader()
     X = X.fillna(0)
     print(f"Labelled rows: {len(X)}  |  features: {X.shape[1]}")
     print(f"Illicit: {y.sum()}  |  Licit: {(y == 0).sum()}")
     if groups is not None:
         print(f"Unique wallets: {groups.nunique()}")
 
-    X_train, X_test, y_train, y_test = split(X, y, groups)
-    print(f"Train: {len(X_train)} rows  |  Test: {len(X_test)} rows "
-          f"({len(X_test) / len(X):.0%})\n")
+    X_train, X_test, y_train, y_test = split(X, y, groups, time_steps)
+    print(f"Train: {len(X_train)} rows (steps 1-{TRAIN_LAST_STEP})  |  "
+          f"Test: {len(X_test)} rows (steps {TRAIN_LAST_STEP + 1}+)\n")
 
     print("Training Random Forest ...")
     model = RandomForestClassifier(
@@ -98,22 +108,8 @@ def train(name, loader):
     )
     model.fit(X_train, y_train)
 
-    y_pred = model.predict(X_test)
-    y_prob = model.predict_proba(X_test)[:, 1]
-
-    accuracy = accuracy_score(y_test, y_pred)
-    roc_auc = roc_auc_score(y_test, y_prob)
-    cm = confusion_matrix(y_test, y_pred)
-    report = classification_report(
-        y_test, y_pred, target_names=["licit", "illicit"], output_dict=True
-    )
-
-    print("\n=== Results on the 20% test set ===")
-    print(classification_report(y_test, y_pred, target_names=["licit", "illicit"]))
-    print(f"Accuracy: {accuracy:.4f}")
-    print(f"ROC-AUC:  {roc_auc:.4f}")
-    print("Confusion matrix (rows = actual, cols = predicted) [licit, illicit]:")
-    print(cm)
+    metrics, y_pred, y_prob = evaluate(model, X_test, y_test, time_steps.loc[X_test.index])
+    print_metrics(metrics)
 
     importances = pd.Series(model.feature_importances_, index=X.columns)
     top = importances.sort_values(ascending=False).head(10)
@@ -127,18 +123,13 @@ def train(name, loader):
 
     metrics_file = EVAL_DIR / f"elliptic_plus_{name}_metrics.json"
     metrics_file.parent.mkdir(parents=True, exist_ok=True)
-    metrics_file.write_text(json.dumps({
-        "train_rows": len(X_train),
-        "test_rows": len(X_test),
-        "accuracy": accuracy,
-        "roc_auc": roc_auc,
-        "confusion_matrix": cm.tolist(),
-        "classification_report": report,
-        "top_features": top.to_dict(),
-    }, indent=2))
+    metrics_file.write_text(json.dumps(
+        {"train_rows": len(X_train), **metrics, "top_features": top.to_dict()}, indent=2
+    ))
     print(f"Metrics saved to {metrics_file}")
 
-    save_graphs(y, y_test, y_pred, y_prob, cm, report, importances, GRAPHS_ROOT / name)
+    save_graphs(y, y_test, y_pred, y_prob, np.asarray(metrics["confusion_matrix"]),
+                metrics["classification_report"], importances, GRAPHS_ROOT / name)
 
 
 DATASETS = {"txs": load_txs, "wallets": load_wallets}

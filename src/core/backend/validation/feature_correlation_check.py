@@ -30,7 +30,8 @@ def get_numeric_feature_columns(features_df: pd.DataFrame) -> List[str]:
 
 def get_data_dir() -> Path:
     """Return the dev-data directory used for feature and raw transaction files."""
-    return Path(__file__).resolve().parents[2] / "data" / "dev"
+    from src.config import DEV_DATA_DIR
+    return DEV_DATA_DIR
 
 
 def normalize_wallet_column(df: pd.DataFrame, expected_name: str = "wallet_address") -> pd.DataFrame:

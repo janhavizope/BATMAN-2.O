@@ -9,8 +9,6 @@ import unittest
 import pandas as pd
 import numpy as np
 
-# Adjust path to find backend modules
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 from src.core.backend.ml.hdbscan_clustering import TransactionClusteredModel
 

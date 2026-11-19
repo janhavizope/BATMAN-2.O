@@ -10,8 +10,6 @@ import unittest
 import pandas as pd
 import networkx as nx
 
-# Adjust path to find backend modules
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 from src.core.backend.correlation.correlator import TransactionCorrelator
 from src.core.backend.graph.graph_builder import TransactionGraphBuilder
@@ -97,21 +95,18 @@ class TestGraphPipeline(unittest.TestCase):
         # Check node types
         self.assertEqual(G.nodes["wallet:wallet_A"]["type"], "wallet")
         self.assertEqual(G.nodes["tx:tx1"]["type"], "transaction")
-        self.assertEqual(G.nodes["ip:192.168.1.1"]["type"], "ip")
-        self.assertEqual(G.nodes["asn:AS100"]["type"], "asn")
-        self.assertEqual(G.nodes["country:US"]["type"], "country")
-        
+
+        # IP / ASN / country values are not hub nodes
+        self.assertEqual({d["type"] for _, d in G.nodes(data=True)}, {"wallet", "transaction"})
+        self.assertEqual(G.number_of_nodes(), 5)  # 3 wallets + 2 transactions
+
         # Check specific edges
         # Wallet to Tx (inputs)
         self.assertTrue(G.has_edge("wallet:wallet_A", "tx:tx1"))
         # Tx to Wallet (outputs)
         self.assertTrue(G.has_edge("tx:tx1", "wallet:wallet_B"))
-        # Wallet to IP
-        self.assertTrue(G.has_edge("wallet:wallet_A", "ip:192.168.1.1"))
-        self.assertTrue(G.has_edge("wallet:wallet_B", "ip:10.0.0.1"))
-        # IP to ASN/Country
-        self.assertTrue(G.has_edge("ip:192.168.1.1", "asn:AS100"))
-        self.assertTrue(G.has_edge("ip:192.168.1.1", "country:US"))
+        self.assertTrue(G.has_edge("wallet:wallet_B", "tx:tx2"))
+        self.assertEqual(G.number_of_edges(), 4)
 
     def test_multi_hop_traversal(self):
         """Test multi-hop wallet path traversal."""
@@ -119,8 +114,6 @@ class TestGraphPipeline(unittest.TestCase):
         
         # wallet_A (input to tx1) -> tx1 -> wallet_B (output of tx1) = 2 hops
         # wallet_B (input to tx2) -> tx2 -> wallet_C (output of tx2) = 2 hops
-        # wallet_A -> IP:192.168.1.1 -> wallet_B (associated via src_ip of tx2) = 2 hops
-        
         # From wallet_A within 2 hops (should find wallet_B)
         connected_2 = self.graph_builder.find_connected_wallets(G, "wallet_A", max_hops=2)
         self.assertIn("wallet_B", connected_2)

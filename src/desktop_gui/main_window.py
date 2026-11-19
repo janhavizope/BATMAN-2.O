@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 
+from src.desktop_gui.widgets.dev_badge import data_status
 from src.desktop_gui.sidebar import Sidebar
 from src.desktop_gui.state.app_state import AppState
 from src.desktop_gui.data.data_manager import DataManager
@@ -83,7 +84,7 @@ class MainWindow(QMainWindow):
         # --- Status bar ------------------------------------------------------
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("SYS_STATUS: ONLINE  |  LOCAL_DATASET_LOADED")
+        self.status_bar.showMessage(data_status())
 
         # --- Wire cross-page interaction -------------------------------------
         self.app_state.entity_selected.connect(self._on_entity_selected)
