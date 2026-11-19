@@ -106,6 +106,19 @@ def test_overview_counts(scores):
     assert stats["total_wallets"] == 12
     assert stats["total_transactions"] == 6
     assert stats["anomalous_entities"] == 3
+    # Flagged wallets (0.97, 0.95, 0.90) band within [threshold=0.90, 1.0]:
+    # 0.97 -> Critical, 0.95 -> High, 0.90 -> Medium. Not all Critical.
+    assert stats["critical_alerts"] == 1
+    assert stats["high_risk_entities"] == 2  # High + Critical
+
+
+def test_risk_levels_spread_across_the_flagged_range(scores):
+    """Severity is banded within [threshold, 1.0], not by fixed 0.6/0.8 cutoffs."""
+    levels = elliptic_source.get_alerts_df().set_index("Entity ID")["Risk Level"]
+    assert levels["wallet02"] == "Critical"  # top third of the flagged range
+    assert levels["wallet08"] == "High"      # middle third
+    assert levels["wallet03"] == "Medium"    # bottom third (at the threshold)
+    assert set(levels) == {"Critical", "High", "Medium"}  # a real spread, not all one band
 
 
 def test_transactions_hide_training_rows(scores):

@@ -90,7 +90,26 @@ def _tx_threshold() -> float:
 
 
 def _risk_level(risk: float) -> str:
-    return "Critical" if risk > 0.8 else "High" if risk > 0.6 else "Medium" if risk >= _wallet_threshold() else "Low"
+    """Severity of a wallet, banded within the flagged range [threshold, 1.0].
+
+    The alert threshold can sit anywhere (it is ~0.997 on the current scores),
+    so fixed 0.6/0.8 cutoffs would put every alert in one band. Instead the
+    flagged range is split into thirds: a wallet in the top third of that
+    range is Critical, the middle third High, the bottom third Medium, and
+    anything below the threshold is Low (not an alert).
+    """
+    threshold = _wallet_threshold()
+    if risk < threshold:
+        return "Low"
+    span = 1.0 - threshold
+    if span <= 1e-9:
+        return "Critical"
+    position = (risk - threshold) / span
+    if position >= 2 / 3:
+        return "Critical"
+    if position >= 1 / 3:
+        return "High"
+    return "Medium"
 
 
 def _step(time_step) -> str:
@@ -181,13 +200,15 @@ def _reason(wallet: pd.Series, contributions: pd.DataFrame) -> str:
 def get_overview_stats():
     data = _load()
     flagged = data["flagged"]
+    # Band the flagged wallets so the KPI cards agree with the alert levels
+    levels = flagged["risk"].map(_risk_level)
     return {
         "total_transactions": len(data["txs"]),
         "total_wallets": len(data["wallets"]),
         "known_illicit": int((data["wallets"]["class"] == "illicit").sum()),
         "anomalous_entities": len(flagged),
-        "high_risk_entities": int((flagged["risk"] > 0.6).sum()),
-        "critical_alerts": int((flagged["risk"] > 0.8).sum()),
+        "high_risk_entities": int(levels.isin(["High", "Critical"]).sum()),
+        "critical_alerts": int((levels == "Critical").sum()),
     }
 
 
