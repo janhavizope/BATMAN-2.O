@@ -248,6 +248,12 @@ The suite covers:
 
 CI runs the same suite on GitHub Actions. It caches the Git LFS score files between runs, so each run doesn't re-download about 55 MB from the repository's LFS quota.
 
+### Manual check — Upload & Score
+
+The **Upload & Score** page was exercised end to end on a sample of 33 transactions: 24 ordinary one-input/one-output payments, plus a fan-in "hub" (8 wallets paying one address within a two-minute burst, then a single sweep-out). The file was run through the exact path the page uses — `TransactionIngestor().ingest(...)` then `pipeline.score_wallets(...)` — and the Streamlit app was started to confirm it serves (`/_stcore/health` and the main page both returned HTTP 200, with no errors in the server log).
+
+Result: all 33 rows validated (0 invalid, 0 duplicate txids) and 35 wallets were scored. The pipeline ranked the **hub Critical** (84/100 — *"many transactions in a short window; high transaction volume; high connectivity"*), its **8 feeders High** (*"unusually anomalous; HDBSCAN outlier; high transaction amounts"*), and the ordinary payers **Medium** — the reasons matching the direction each signal pushed the score. Scores are relative to the uploaded file and unsupervised (ROC-AUC ~0.54 on real labels), so they mean "unusual within this file", not "illicit"; on this crafted file the flagged wallets were the injected anomalies.
+
 ---
 
 ## TODO
@@ -295,7 +301,7 @@ These come from a review of the changes above.
 
 #### Done
 
-- [x] **Position-based severity.** Critical, High and Medium are a wallet's position in the risk-ranked alert list (top 10% / next 30% / rest), with ties ordered by transaction count. An earlier rank rule let the 229-wide tie at risk 1.0 fill Critical+High and leave High empty; positional banding keeps the 10/30/60 split (57 / 171 / 342). See [Alert threshold](#alert-threshold).
+- [x] **Position-based severity.** Critical, High and Medium are a wallet's position in the risk-ranked alert list (top 10% / next 30% / rest). An earlier rank rule let a large tie at risk 1.0 fill Critical+High and leave High empty; positional banding keeps the 10/30/60 split, and ties are now ordered by mean transaction risk so the bands carry information (94 / 281 / 561 on the current scores). See [Alert threshold](#alert-threshold).
 - [x] **Detect Git LFS pointer files.** If the repository is cloned without Git LFS, both apps say to run `git lfs pull` instead of failing when they read the scores (`scores_status()` in `elliptic_source.py`).
 - [x] **Warn on the Upload & Score page** that the unsupervised score is close to random on real labelled wallets.
 - [x] **Cache Git LFS files in CI** so each run doesn't use up the LFS bandwidth quota.
@@ -303,8 +309,9 @@ These come from a review of the changes above.
 - [x] **Stop a bad timestamp from failing a whole upload.** `validator.py` parses the timestamp during row validation, so one row with an unparseable date is dropped as invalid instead of raising `DateParseError` for the entire file.
 - [x] **Rank-scale the unsupervised signals.** `rank_scale` (was `min_max_scale`) in `risk_engine.py` scales each signal by percentile rank, so one extreme wallet no longer compresses the others toward 0 on heavy-tailed signals (amount, degree).
 - [x] **Remove dead/duplicate modules.** Deleted `feature_extractor.py` (superseded by `feature_engineering.py`), `analysis/validate_features.py` and `validation/feature_correlation_check.py` (two copies of the same unused diagnostic), and `correlation/correlator.py` (used only by a test) — none were imported by the apps or pipeline.
-- [x] **Make the pipeline's output messages honest.** `run_pipeline.py --unsupervised` no longer claims the desktop app reads `data/dev/results.json` (nothing reads it); the network-graph "entity risk timeline" now says the wallet risk is a single value, not a series that changes over time.
+- [x] **Make the pipeline's output messages honest.** `run_pipeline.py --unsupervised` no longer claims the desktop app reads `data/dev/results.json` (nothing reads it).
 - [x] **Choose the alert threshold on a validation period, not the test set.** The models now train on steps 1–29, `choose_threshold` picks the threshold on the held-out validation period (30–34), and precision/recall are reported on the test period (35–49), never used for tuning. See [Alert threshold](#alert-threshold) and the [evaluation notes](#evaluation-notes).
+- [x] **Causal risk timeline.** `score_wallets.py` writes each flagged wallet's risk as it accrues over time — by each step, the highest risk among its transactions up to that step — so the network-graph "entity risk timeline" rises to the wallet's headline risk instead of being a flat line.
 
 #### Open
 
@@ -320,8 +327,8 @@ These come from a review of the changes above.
 
 **P2 — operations**
 
-- [ ] **Show performance drift in the app.** Add the per-time-step F1 chart to the dashboard, and document that the models need retraining when illicit behaviour changes (as after step 43).
-- [ ] **Remove the old parquet copies from git history** (`git lfs migrate import`). This rewrites history, so everyone must re-clone afterwards. Agree on it as a team first.
+- [x] **Show performance drift in the app.** The Overview page now shows the transaction model's illicit F1 per test time step (green where it works, red where F1 < 0.5), with a caption that detection collapses after the step-43 dark-market shutdown and the models need retraining when illicit behaviour changes (`get_model_drift()` in `elliptic_source.py`).
+- [ ] **Remove the old parquet copies from git history** (`git lfs migrate import`). **Not done — deliberately deferred.** This rewrites every commit SHA and needs a force-push, which breaks every teammate's clone (everyone must re-clone) and cannot be undone, so it must be agreed as a team first and run as a separate announced step after this work is merged.
 - [ ] **Rebuild the Linux AppImage** from the current code.
 
 ---
