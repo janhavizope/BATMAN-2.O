@@ -41,8 +41,36 @@ MAX_TXS_PER_ENTITY = 15
 _CACHE = {}
 
 
+REQUIRED_FILES = ("WALLET_SCORES", "WALLET_TIMELINE", "WALLET_EXPLANATIONS", "TX_SCORES", "TX_EDGES")
+# A Git LFS pointer file (the repository was cloned without Git LFS) starts with this
+LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/"
+
+# Severity of an alert is its rank among all alerts: the top 10% are Critical,
+# the next 30% High, the rest Medium. Wallets tied on risk share the higher band.
+CRITICAL_SHARE = 0.10
+HIGH_SHARE = 0.40
+
+
+def _is_lfs_pointer(path) -> bool:
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(len(LFS_POINTER_PREFIX)) == LFS_POINTER_PREFIX
+    except OSError:
+        return False
+
+
+def scores_status() -> str:
+    """'ok', 'missing' (a score file does not exist) or 'lfs_pointer' (Git LFS not pulled)."""
+    paths = [globals()[name] for name in REQUIRED_FILES]
+    if not all(p.exists() for p in paths):
+        return "missing"
+    if any(_is_lfs_pointer(p) for p in paths):
+        return "lfs_pointer"
+    return "ok"
+
+
 def is_available() -> bool:
-    return all(p.exists() for p in (WALLET_SCORES, WALLET_TIMELINE, WALLET_EXPLANATIONS, TX_SCORES, TX_EDGES))
+    return scores_status() == "ok"
 
 
 def choose_threshold(scores: pd.DataFrame, budget: int, floor: float = 0.0) -> dict:
@@ -90,24 +118,25 @@ def _tx_threshold() -> float:
 
 
 def _risk_level(risk: float) -> str:
-    """Severity of a wallet, banded within the flagged range [threshold, 1.0].
+    """Severity of a wallet: its rank among the alerted (flagged) wallets.
 
-    The alert threshold can sit anywhere (it is ~0.997 on the current scores),
-    so fixed 0.6/0.8 cutoffs would put every alert in one band. Instead the
-    flagged range is split into thirds: a wallet in the top third of that
-    range is Critical, the middle third High, the bottom third Medium, and
-    anything below the threshold is Low (not an alert).
+    The alert threshold sits near 1.0 (~0.997 on the current scores), and
+    Random Forest probabilities that close to 1.0 are not calibrated, so
+    cutting the probability range into bands says little. Ranking does:
+    Critical = the top CRITICAL_SHARE of alerts, High = the alerts up to
+    HIGH_SHARE, Medium = the rest. A wallet's rank counts the alerts with a
+    strictly higher risk, so tied wallets share the higher band. Anything
+    below the threshold is Low (not an alert).
     """
-    threshold = _wallet_threshold()
-    if risk < threshold:
+    if risk < _wallet_threshold():
         return "Low"
-    span = 1.0 - threshold
-    if span <= 1e-9:
+    descending = _load()["flagged_risks_desc"]
+    n = max(len(descending), 1)
+    # number of alerts with a strictly higher risk, + 1
+    rank = int(np.searchsorted(-descending, -risk, side="left")) + 1
+    if rank <= max(1, int(np.ceil(n * CRITICAL_SHARE))):
         return "Critical"
-    position = (risk - threshold) / span
-    if position >= 2 / 3:
-        return "Critical"
-    if position >= 1 / 3:
+    if rank <= max(1, int(np.ceil(n * HIGH_SHARE))):
         return "High"
     return "Medium"
 
@@ -139,6 +168,7 @@ def _load():
             .sort_values(["risk", "total_txs"], ascending=False)
             .reset_index(drop=True)
         )
+        _CACHE["flagged_risks_desc"] = _CACHE["flagged"]["risk"].to_numpy()  # already sorted, highest first
         feature_cols = [c for c in wallets.columns if c not in ("address", "time_step", "class", "risk", "split")]
         _CACHE["medians"] = wallets[wallets["class"] != "unknown"].groupby("class")[feature_cols].median()
         _CACHE["txs"] = txs

@@ -34,7 +34,7 @@ streamlit run app.py               # web app
 python main.py                     # desktop app (same data)
 ```
 
-Open http://127.0.0.1:8501. No dataset download is needed. The app uses the scores in `data/elliptic_plus/*.parquet`. If you cloned before installing Git LFS, run `git lfs pull` to replace the pointer files with the real ones.
+Open http://127.0.0.1:8501. No dataset download is needed. The app uses the scores in `data/elliptic_plus/*.parquet`. If you cloned before installing Git LFS, the score files are small pointer files. Both apps detect this and tell you to run `git lfs install && git lfs pull`, which downloads the real files.
 
 ### Pages
 
@@ -57,9 +57,13 @@ The alert threshold is not a fixed 0.5. `choose_threshold` in [`src/data/ellipti
 
 On the current scores the wallet threshold is 0.997. It flags 570 wallets (ties at the threshold push it past 500), down from 26,006 at 0.5. On test wallets that threshold gives precision 64% and recall 0.2%. Wallet-level prediction under a temporal split is weak (see [Results](#results-temporal-split)), so treat wallet alerts as leads, not findings. The transaction threshold is also 0.997. It flags 1,187 transactions with test precision 100% and recall 16%.
 
+**Severity (Critical / High / Medium) is a wallet's rank among the alerts:** Critical is the top 10%, High is up to 40%, and Medium is the rest (`CRITICAL_SHARE` and `HIGH_SHARE` in `elliptic_source.py`). Wallets tied on risk share the higher band. On the current scores the 570 alerts have only **two distinct risk values**: 229 wallets at 1.0 (all 300 trees vote illicit) and 341 at 0.997 (299 of 300). So the split is 229 Critical and 341 Medium, with no High. Telling these alerts apart needs a better-calibrated or more finely ranked score (see [TODO](#open)), not a different banding rule.
+
 ### Upload & Score
 
 Required columns: `txid`, `timestamp`, `input_addresses`, `output_addresses`, `input_amounts`, `output_amounts`. List fields use `|` or JSON arrays. `fee` and the network fields (`src_ip`, `dst_ip`, `src_port`, `dst_port`, `asn`, `geo_country`) are optional, because real on-chain data has no network fields. The page offers a template CSV. Uploads are validated with [`validator.py`](src/core/backend/validation/validator.py) and scored in memory with [`pipeline.py`](src/core/backend/pipeline.py). Scores are relative to the uploaded file, and nothing leaves the machine.
+
+The page shows a warning at the top. On real labelled Elliptic++ wallets this unsupervised score reached ROC-AUC 0.48, close to random guessing (see [Unsupervised pipeline](#unsupervised-pipeline-experimental)). Its HIGH and CRITICAL levels mean "unusual compared with the rest of the file", not "illicit".
 
 ---
 
@@ -237,11 +241,11 @@ pytest
 The suite covers:
 
 - **Unsupervised backend:** ingestion and validation (including data without network fields), features (including send/receive direction and co-input counterparties), graph, clustering, the risk engine, and the in-memory pipeline used by Upload & Score.
-- **Shared data layer** (`tests/test_data_source.py`): threshold choice, hidden training rows, alerts, entities, wallet-transaction links, the network graph, and the desktop DataManager on top of it.
+- **Shared data layer** (`tests/test_data_source.py`): threshold choice, rank-based severity (including ties), Git LFS pointer detection, hidden training rows, alerts, entities, wallet-transaction links, the network graph, and the desktop DataManager on top of it.
 - **Training and scoring scripts** (`tests/test_training_scripts.py`): the temporal and wallet splits, dropped time features, and a full train → score run on small synthetic Elliptic++ fixtures.
 - **Desktop GUI:** pages and state.
 
-CI runs the same suite on GitHub Actions.
+CI runs the same suite on GitHub Actions. It caches the Git LFS score files between runs, so each run doesn't re-download about 55 MB from the repository's LFS quota.
 
 ---
 
@@ -283,6 +287,37 @@ Priorities: **P0** = the results or claims are wrong until fixed · **P1** = a c
 - [x] **Escape dataset values** before inserting them into `unsafe_allow_html` markup.
 - [x] **Move large parquet files to Git LFS.** `data/elliptic_plus/*.parquet` are tracked by Git LFS from now on. Earlier commits still hold the old copies; removing those would need a history rewrite (`git lfs migrate`) and a force-push.
 - [x] **Update or remove `PROJECT_STRUCTURE.md`.** It now points to this README.
+
+### Review follow-ups (November 2026)
+
+These come from a review of the changes above.
+
+#### Done
+
+- [x] **Rank-based severity.** Critical, High and Medium are a wallet's rank among the alerts, with ties sharing the higher band. They used to be thirds of the 0.997–1.0 probability range. See [Alert threshold](#alert-threshold).
+- [x] **Detect Git LFS pointer files.** If the repository is cloned without Git LFS, both apps say to run `git lfs pull` instead of failing when they read the scores (`scores_status()` in `elliptic_source.py`).
+- [x] **Warn on the Upload & Score page** that the unsupervised score is close to random on real labelled wallets.
+- [x] **Cache Git LFS files in CI** so each run doesn't use up the LFS bandwidth quota.
+
+#### Open
+
+**P0 — evaluation**
+
+- [ ] **Check the remaining wallet features for future information.** `lifetime_in_blocks` is still the 10th most important wallet feature. If it, `num_timesteps_appeared_in`, `total_txs` or `btc_transacted_total` are computed over a wallet's whole history, a training row from step 10 reveals activity after step 34. Check whether each one stays constant for an address across its time steps. If it does, drop it or recompute it up to each time step, then retrain.
+- [ ] **Choose the alert threshold on a validation period, not the test set.** For example, train on steps 1–29, pick the threshold on steps 30–34, then retrain on 1–34. Report test precision and recall at that threshold without tuning on the test set.
+
+**P1 — models and product**
+
+- [ ] **Derive wallet risk from transaction risk.** The transaction model is much stronger than the wallet model (F1 0.82 vs 0.29). Score each wallet from the transactions it sent or received (for example, the highest transaction risk via `AddrTx` / `TxAddr`), and compare that ranking with the wallet model on test wallets. `score_wallets.py` currently writes these links only for flagged wallets, so the export must cover every wallet.
+- [ ] **Break ties among alerts.** All 570 wallet alerts have one of two risk values (1.0 or 0.997). Calibrate the probabilities on the validation period (`CalibratedClassifierCV`), or add a secondary ranking signal, so alerts can be ordered and severity carries information.
+- [ ] **Revisit "keep each wallet's highest-risk time step".** Taking the maximum over time steps pushes wallets that appear in many steps toward the top. Compare this with the latest or mean risk.
+- [ ] **Rank-scale the unsupervised signals.** `min_max_scale` in `risk_engine.py` lets one extreme wallet compress every other wallet toward 0 on heavy-tailed signals (amount, degree). Try percentile ranks, then re-run `run_unsupervised_elliptic_plus.py` and update the numbers above.
+
+**P2 — operations**
+
+- [ ] **Show performance drift in the app.** Add the per-time-step F1 chart to the dashboard, and document that the models need retraining when illicit behaviour changes (as after step 43).
+- [ ] **Remove the old parquet copies from git history** (`git lfs migrate import`). This rewrites history, so everyone must re-clone afterwards. Agree on it as a team first.
+- [ ] **Rebuild the Linux AppImage** from the current code.
 
 ---
 

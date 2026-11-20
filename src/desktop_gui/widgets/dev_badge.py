@@ -17,6 +17,9 @@ def data_status() -> str:
     if elliptic_source.is_available():
         scored_on = datetime.fromtimestamp(elliptic_source.WALLET_SCORES.stat().st_mtime).strftime("%Y-%m-%d")
         return f"[PRECOMPUTED SCORES] Elliptic++ Random Forest risk scores, written {scored_on}. Not a live feed."
+    if elliptic_source.scores_status() == "lfs_pointer":
+        return ("[NO SCORES] data/elliptic_plus/ holds Git LFS pointers, not the score files: "
+                "run git lfs install && git lfs pull")
     return "[NO SCORES] No risk scores found in data/elliptic_plus/: run scripts/run_pipeline.py"
 
 
