@@ -11,6 +11,7 @@ Restores the original visual design tokens:
 
 import os
 import base64
+import html
 from pathlib import Path
 import streamlit as st
 
@@ -59,6 +60,17 @@ def _scores_date() -> str | None:
     return datetime.fromtimestamp(elliptic_source.WALLET_SCORES.stat().st_mtime).strftime("%Y-%m-%d")
 
 
+def _missing_scores_message() -> str:
+    """Why the score files can't be read, and the command that fixes it."""
+    from src.data import elliptic_source
+    if elliptic_source.scores_status() == "lfs_pointer":
+        return ("The score files in data/elliptic_plus/ are Git LFS pointers, not the real files: "
+                "the repository was cloned without Git LFS. Install Git LFS, then run "
+                "git lfs install && git lfs pull.")
+    return ("The score files in data/elliptic_plus/ are missing. Download the Elliptic and Elliptic++ "
+            "datasets (see README) and run scripts/run_pipeline.py.")
+
+
 def render_dev_badge() -> None:
     """Show where the displayed data comes from: precomputed scores, or none."""
     scored_on = _scores_date()
@@ -80,7 +92,7 @@ def render_dev_badge() -> None:
             "font-size:11px; font-family:'JetBrains Mono', Consolas, monospace; "
             "color:#ff8888; margin-bottom:14px; letter-spacing:0.5px;\">"
             "<strong>[NO SCORES]</strong> &mdash; "
-            "No risk scores found in data/elliptic_plus/. Run scripts/run_pipeline.py to create them."
+            f"{html.escape(_missing_scores_message())}"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -95,8 +107,7 @@ def render_dataset_notice() -> None:
             "margin-bottom:16px; font-family:'JetBrains Mono', Consolas, monospace; "
             "font-size:11px; color:#d4d4d4; line-height:1.5;\">"
             "<strong style='color:#ff4d4d;'>[SCORES REQUIRED]</strong> "
-            "The score files in data/elliptic_plus/ are missing. Download the Elliptic and Elliptic++ "
-            "datasets (see README) and run scripts/run_pipeline.py."
+            f"{html.escape(_missing_scores_message())}"
             "</div>",
             unsafe_allow_html=True,
         )

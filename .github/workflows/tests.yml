@@ -10,9 +10,22 @@ jobs:
     env:
       QT_QPA_PLATFORM: offscreen
     steps:
+      # data/elliptic_plus/*.parquet are Git LFS files (~55 MB). Download them
+      # once and reuse them from the Actions cache, so each run doesn't spend
+      # the repository's Git LFS bandwidth quota.
       - uses: actions/checkout@v4
+
+      - name: List Git LFS objects
+        run: git lfs ls-files --long | cut -d ' ' -f1 | sort > .lfs-assets-id
+
+      - name: Restore Git LFS cache
+        uses: actions/cache@v4
         with:
-          lfs: true   # data/elliptic_plus/*.parquet are Git LFS files
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+
+      - name: Check out Git LFS files
+        run: git lfs pull
 
       - uses: actions/setup-python@v5
         with:

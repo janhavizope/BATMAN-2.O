@@ -12,12 +12,14 @@ Score your own transaction data with the unsupervised pipeline:
 No labels are needed and nothing leaves the machine.
 """
 
+import json
 import os
 import tempfile
 
 import pandas as pd
 import streamlit as st
 
+from src.config import EVALUATION_DIR
 from src.core.backend.ingestion.ingestor import TransactionIngestor
 from src.core.backend.pipeline import score_wallets
 from src.web_frontend.components import render_header, render_metric_card
@@ -37,6 +39,23 @@ TEMPLATE = pd.DataFrame([
 
 RESULT_COLUMNS = ["risk_score", "risk_level", "top_reasons", "total_tx_count",
                   "unique_counterparties", "total_sent", "total_received", "anomaly_score", "cluster_id"]
+
+
+UNSUPERVISED_METRICS = EVALUATION_DIR / "elliptic_plus_unsupervised_metrics.json"
+
+
+def _reliability_note() -> str:
+    """How well this score did on real labelled wallets, from the committed evaluation."""
+    note = ("This score is experimental. Use it to choose what to look at first, not as evidence: "
+            "HIGH and CRITICAL mean 'unusual compared with the rest of this file', not 'illicit'.")
+    try:
+        metrics = json.loads(UNSUPERVISED_METRICS.read_text())
+        unsupervised = metrics["test_wallets"]["unsupervised"]["roc_auc"]
+        supervised = metrics["test_wallets"]["supervised_random_forest"]["roc_auc"]
+    except (OSError, ValueError, KeyError):
+        return note
+    return (note + f" On real labelled Elliptic++ wallets it scored ROC-AUC {unsupervised:.2f} "
+            f"(0.50 is random guessing), against {supervised:.2f} for the supervised wallet model.")
 
 
 def _section_label(text: str) -> None:
@@ -88,6 +107,7 @@ def render_upload_score() -> None:
         "output_addresses, input_amounts, output_amounts. List fields use | or JSON arrays. "
         "fee and the network fields (src_ip, dst_ip, src_port, dst_port, asn, geo_country) are optional."
     )
+    st.warning(_reliability_note())
     st.download_button("Download a template CSV", TEMPLATE.to_csv(index=False).encode("utf-8"),
                        file_name="batman_transactions_template.csv", mime="text/csv")
 

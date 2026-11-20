@@ -106,19 +106,47 @@ def test_overview_counts(scores):
     assert stats["total_wallets"] == 12
     assert stats["total_transactions"] == 6
     assert stats["anomalous_entities"] == 3
-    # Flagged wallets (0.97, 0.95, 0.90) band within [threshold=0.90, 1.0]:
-    # 0.97 -> Critical, 0.95 -> High, 0.90 -> Medium. Not all Critical.
+    # Flagged wallets (0.97, 0.95, 0.90) are banded by rank among the 3 alerts:
+    # top 10% (rank 1) -> Critical, up to 40% (rank 2) -> High, rank 3 -> Medium.
     assert stats["critical_alerts"] == 1
     assert stats["high_risk_entities"] == 2  # High + Critical
 
 
-def test_risk_levels_spread_across_the_flagged_range(scores):
-    """Severity is banded within [threshold, 1.0], not by fixed 0.6/0.8 cutoffs."""
+def test_risk_levels_follow_rank_among_alerts(scores):
+    """Severity is the rank among alerts, not a cut of the probability range."""
     levels = elliptic_source.get_alerts_df().set_index("Entity ID")["Risk Level"]
-    assert levels["wallet02"] == "Critical"  # top third of the flagged range
-    assert levels["wallet08"] == "High"      # middle third
-    assert levels["wallet03"] == "Medium"    # bottom third (at the threshold)
+    assert levels["wallet02"] == "Critical"  # rank 1 of 3
+    assert levels["wallet08"] == "High"      # rank 2 of 3
+    assert levels["wallet03"] == "Medium"    # rank 3 of 3 (at the threshold)
     assert set(levels) == {"Critical", "High", "Medium"}  # a real spread, not all one band
+
+
+def test_tied_wallets_share_the_higher_band(scores, monkeypatch):
+    elliptic_source._load()
+    monkeypatch.setitem(elliptic_source._CACHE, "flagged_risks_desc",
+                        pd.Series([1.0, 1.0, 1.0, 0.99, 0.98, 0.97, 0.96, 0.95, 0.94, 0.93]).to_numpy())
+    monkeypatch.setitem(elliptic_source._CACHE["wallet_threshold"], "threshold", 0.93)
+    # Three alerts tie at 1.0: all rank 1, so all Critical even though 10% of 10 is one wallet
+    assert elliptic_source._risk_level(1.0) == "Critical"
+    assert elliptic_source._risk_level(0.99) == "High"    # rank 4 of 10, within 40%
+    assert elliptic_source._risk_level(0.98) == "Medium"  # rank 5 of 10
+    assert elliptic_source._risk_level(0.50) == "Low"     # below the threshold: not an alert
+
+
+def test_lfs_pointer_files_are_not_available(scores, tmp_path, monkeypatch):
+    pointer = tmp_path / "pointer.parquet"
+    pointer.write_bytes(b"version https://git-lfs.github.com/spec/v1\n"
+                        b"oid sha256:" + b"0" * 64 + b"\nsize 123\n")
+    monkeypatch.setattr(elliptic_source, "WALLET_SCORES", pointer)
+    assert elliptic_source.scores_status() == "lfs_pointer"
+    assert not elliptic_source.is_available()
+    assert not data_manager.is_data_available()
+
+
+def test_scores_status_ok_and_missing(scores, tmp_path, monkeypatch):
+    assert elliptic_source.scores_status() == "ok"
+    monkeypatch.setattr(elliptic_source, "TX_SCORES", tmp_path / "missing.parquet")
+    assert elliptic_source.scores_status() == "missing"
 
 
 def test_transactions_hide_training_rows(scores):
