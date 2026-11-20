@@ -45,8 +45,10 @@ REQUIRED_FILES = ("WALLET_SCORES", "WALLET_TIMELINE", "WALLET_EXPLANATIONS", "TX
 # A Git LFS pointer file (the repository was cloned without Git LFS) starts with this
 LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/"
 
-# Severity of an alert is its rank among all alerts: the top 10% are Critical,
-# the next 30% High, the rest Medium. Wallets tied on risk share the higher band.
+# Severity is an alert's position in the risk-ranked list: the top 10% are
+# Critical, the next 30% High, the rest Medium. Positions come from the
+# (risk, total_txs) order, so wallets tied on model risk are separated by their
+# transaction count instead of all collapsing into one band.
 CRITICAL_SHARE = 0.10
 HIGH_SHARE = 0.40
 
@@ -117,28 +119,25 @@ def _tx_threshold() -> float:
     return _load()["tx_threshold"]["threshold"]
 
 
-def _risk_level(risk: float) -> str:
-    """Severity of a wallet: its rank among the alerted (flagged) wallets.
+def _severity_bands(n: int) -> list:
+    """Severity label for each of `n` alerts, ordered highest-risk first.
 
     The alert threshold sits near 1.0 (~0.997 on the current scores), and
     Random Forest probabilities that close to 1.0 are not calibrated, so
-    cutting the probability range into bands says little. Ranking does:
-    Critical = the top CRITICAL_SHARE of alerts, High = the alerts up to
-    HIGH_SHARE, Medium = the rest. A wallet's rank counts the alerts with a
-    strictly higher risk, so tied wallets share the higher band. Anything
-    below the threshold is Low (not an alert).
+    cutting the probability range into bands says little. Position does:
+    Critical = the top CRITICAL_SHARE of alerts, High = up to HIGH_SHARE,
+    Medium = the rest. The caller ranks alerts by (risk, total_txs), so
+    wallets tied on model risk are separated by transaction count rather than
+    all landing in one band. This keeps the 10/30/60 split even when a large
+    tie sits at the top (229 wallets score exactly 1.0 on the current data);
+    calibrating the probabilities (see the README TODO) would make the order
+    within a tie reflect the model instead of this secondary signal.
     """
-    if risk < _wallet_threshold():
-        return "Low"
-    descending = _load()["flagged_risks_desc"]
-    n = max(len(descending), 1)
-    # number of alerts with a strictly higher risk, + 1
-    rank = int(np.searchsorted(-descending, -risk, side="left")) + 1
-    if rank <= max(1, int(np.ceil(n * CRITICAL_SHARE))):
-        return "Critical"
-    if rank <= max(1, int(np.ceil(n * HIGH_SHARE))):
-        return "High"
-    return "Medium"
+    if n <= 0:
+        return []
+    critical = max(1, int(np.ceil(n * CRITICAL_SHARE)))
+    high = max(critical, int(np.ceil(n * HIGH_SHARE)))
+    return ["Critical" if i < critical else "High" if i < high else "Medium" for i in range(n)]
 
 
 def _step(time_step) -> str:
@@ -168,7 +167,8 @@ def _load():
             .sort_values(["risk", "total_txs"], ascending=False)
             .reset_index(drop=True)
         )
-        _CACHE["flagged_risks_desc"] = _CACHE["flagged"]["risk"].to_numpy()  # already sorted, highest first
+        # Severity by position in that ranked list (highest risk first)
+        _CACHE["flagged"]["severity"] = _severity_bands(len(_CACHE["flagged"]))
         feature_cols = [c for c in wallets.columns if c not in ("address", "time_step", "class", "risk", "split")]
         _CACHE["medians"] = wallets[wallets["class"] != "unknown"].groupby("class")[feature_cols].median()
         _CACHE["txs"] = txs
@@ -230,8 +230,8 @@ def _reason(wallet: pd.Series, contributions: pd.DataFrame) -> str:
 def get_overview_stats():
     data = _load()
     flagged = data["flagged"]
-    # Band the flagged wallets so the KPI cards agree with the alert levels
-    levels = flagged["risk"].map(_risk_level)
+    # The KPI cards use the same per-alert severity as the alerts table
+    levels = flagged["severity"]
     return {
         "total_transactions": len(data["txs"]),
         "total_wallets": len(data["wallets"]),
@@ -320,7 +320,7 @@ def get_alerts_df():
             "Rank": range(1, len(flagged) + 1),
             "Entity ID": flagged["address"],
             "Risk Score": (flagged["risk"] * 100).astype(int),
-            "Risk Level": flagged["risk"].map(_risk_level),
+            "Risk Level": flagged["severity"].to_numpy(),
             "Main Reason": flagged["address"].map(top_feature).map(
                 lambda f: f"Top factor: {_pretty(f)}" if isinstance(f, str) else "Risk score above threshold"
             ),
@@ -342,7 +342,7 @@ def get_entities():
             entities[addr] = {
                 "entity_id": addr,
                 "risk_score": int(wallet["risk"] * 100),
-                "risk_level": _risk_level(wallet["risk"]),
+                "risk_level": wallet["severity"],
                 "anomaly_score": wallet["risk"],
                 "transaction_count": int(wallet["total_txs"]),
                 "counterparty_count": int(wallet["transacted_w_address_total"]),

@@ -106,31 +106,43 @@ def test_overview_counts(scores):
     assert stats["total_wallets"] == 12
     assert stats["total_transactions"] == 6
     assert stats["anomalous_entities"] == 3
-    # Flagged wallets (0.97, 0.95, 0.90) are banded by rank among the 3 alerts:
-    # top 10% (rank 1) -> Critical, up to 40% (rank 2) -> High, rank 3 -> Medium.
+    # Flagged wallets (0.97, 0.95, 0.90) are banded by position among the 3 alerts:
+    # top 10% (position 0) -> Critical, up to 40% (position 1) -> High, rest -> Medium.
     assert stats["critical_alerts"] == 1
     assert stats["high_risk_entities"] == 2  # High + Critical
 
 
-def test_risk_levels_follow_rank_among_alerts(scores):
-    """Severity is the rank among alerts, not a cut of the probability range."""
+def test_risk_levels_follow_position_among_alerts(scores):
+    """Severity is the alert's position in the ranked list, not a cut of the probability range."""
     levels = elliptic_source.get_alerts_df().set_index("Entity ID")["Risk Level"]
-    assert levels["wallet02"] == "Critical"  # rank 1 of 3
-    assert levels["wallet08"] == "High"      # rank 2 of 3
-    assert levels["wallet03"] == "Medium"    # rank 3 of 3 (at the threshold)
+    assert levels["wallet02"] == "Critical"  # position 0 of 3
+    assert levels["wallet08"] == "High"      # position 1 of 3
+    assert levels["wallet03"] == "Medium"    # position 2 of 3 (at the threshold)
     assert set(levels) == {"Critical", "High", "Medium"}  # a real spread, not all one band
 
 
-def test_tied_wallets_share_the_higher_band(scores, monkeypatch):
-    elliptic_source._load()
-    monkeypatch.setitem(elliptic_source._CACHE, "flagged_risks_desc",
-                        pd.Series([1.0, 1.0, 1.0, 0.99, 0.98, 0.97, 0.96, 0.95, 0.94, 0.93]).to_numpy())
-    monkeypatch.setitem(elliptic_source._CACHE["wallet_threshold"], "threshold", 0.93)
-    # Three alerts tie at 1.0: all rank 1, so all Critical even though 10% of 10 is one wallet
-    assert elliptic_source._risk_level(1.0) == "Critical"
-    assert elliptic_source._risk_level(0.99) == "High"    # rank 4 of 10, within 40%
-    assert elliptic_source._risk_level(0.98) == "Medium"  # rank 5 of 10
-    assert elliptic_source._risk_level(0.50) == "Low"     # below the threshold: not an alert
+def test_severity_bands_fill_every_band_despite_a_top_tie(scores):
+    """Position-based banding keeps the 10/30/60 split and never leaves High empty.
+
+    The previous 'ties share the higher band' rule let a large tie at the top
+    (229 wallets at 1.0 on the real scores) take all of Critical+High and push
+    everyone else to Medium, so High was empty. Positional banding does not.
+    """
+    assert elliptic_source._severity_bands(0) == []
+    assert elliptic_source._severity_bands(10) == ["Critical"] + ["High"] * 3 + ["Medium"] * 6
+    # The 570-alert shape from the committed scores: High is populated.
+    big = elliptic_source._severity_bands(570)
+    assert big.count("Critical") == 57
+    assert big.count("High") == 171
+    assert big.count("Medium") == 342
+
+
+def test_alerts_are_ranked_by_risk_then_transaction_count(scores):
+    """Within equal model risk, the more active wallet ranks higher (the tie signal)."""
+    alerts = elliptic_source.get_alerts_df()
+    assert list(alerts["Rank"]) == list(range(1, len(alerts) + 1))
+    risks = alerts["Risk Score"].to_numpy()
+    assert all(risks[i] >= risks[i + 1] for i in range(len(risks) - 1))
 
 
 def test_lfs_pointer_files_are_not_available(scores, tmp_path, monkeypatch):

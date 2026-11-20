@@ -57,7 +57,7 @@ The alert threshold is not a fixed 0.5. `choose_threshold` in [`src/data/ellipti
 
 On the current scores the wallet threshold is 0.997. It flags 570 wallets (ties at the threshold push it past 500), down from 26,006 at 0.5. On test wallets that threshold gives precision 64% and recall 0.2%. Wallet-level prediction under a temporal split is weak (see [Results](#results-temporal-split)), so treat wallet alerts as leads, not findings. The transaction threshold is also 0.997. It flags 1,187 transactions with test precision 100% and recall 16%.
 
-**Severity (Critical / High / Medium) is a wallet's rank among the alerts:** Critical is the top 10%, High is up to 40%, and Medium is the rest (`CRITICAL_SHARE` and `HIGH_SHARE` in `elliptic_source.py`). Wallets tied on risk share the higher band. On the current scores the 570 alerts have only **two distinct risk values**: 229 wallets at 1.0 (all 300 trees vote illicit) and 341 at 0.997 (299 of 300). So the split is 229 Critical and 341 Medium, with no High. Telling these alerts apart needs a better-calibrated or more finely ranked score (see [TODO](#open)), not a different banding rule.
+**Severity (Critical / High / Medium) is a wallet's position in the risk-ranked alert list:** Critical is the top 10%, High the next 30%, and Medium the rest (`CRITICAL_SHARE` and `HIGH_SHARE` in `elliptic_source.py`). Alerts are ranked by `(risk, total_txs)`, so wallets tied on model risk are ordered by transaction count — a weak secondary signal, but enough to keep the bands from collapsing. On the current scores the 570 alerts have **31 distinct risk values**, but they are tightly bunched against 1.0: 229 wallets sit at exactly 1.0 and the other 341 span the range 0.9967–0.99998. Banding by position gives **57 Critical, 171 High, 342 Medium**. The bands order the alerts for triage; they do not claim 57 wallets are meaningfully riskier than the next 171, because probabilities this close to 1.0 are not calibrated. Making severity carry real information needs a better-calibrated score (see [TODO](#open)), which the positional banding is a stopgap for — an earlier version banded by thirds of the probability range and a later one by strict rank, where a single 229-wide tie at 1.0 took all of Critical+High and left High empty.
 
 ### Upload & Score
 
@@ -241,7 +241,7 @@ pytest
 The suite covers:
 
 - **Unsupervised backend:** ingestion and validation (including data without network fields), features (including send/receive direction and co-input counterparties), graph, clustering, the risk engine, and the in-memory pipeline used by Upload & Score.
-- **Shared data layer** (`tests/test_data_source.py`): threshold choice, rank-based severity (including ties), Git LFS pointer detection, hidden training rows, alerts, entities, wallet-transaction links, the network graph, and the desktop DataManager on top of it.
+- **Shared data layer** (`tests/test_data_source.py`): threshold choice, position-based severity (that every band is filled despite a large tie at the top), Git LFS pointer detection, hidden training rows, alerts, entities, wallet-transaction links, the network graph, and the desktop DataManager on top of it.
 - **Training and scoring scripts** (`tests/test_training_scripts.py`): the temporal and wallet splits, dropped time features, and a full train → score run on small synthetic Elliptic++ fixtures.
 - **Desktop GUI:** pages and state.
 
@@ -294,7 +294,7 @@ These come from a review of the changes above.
 
 #### Done
 
-- [x] **Rank-based severity.** Critical, High and Medium are a wallet's rank among the alerts, with ties sharing the higher band. They used to be thirds of the 0.997–1.0 probability range. See [Alert threshold](#alert-threshold).
+- [x] **Position-based severity.** Critical, High and Medium are a wallet's position in the risk-ranked alert list (top 10% / next 30% / rest), with ties ordered by transaction count. An earlier rank rule let the 229-wide tie at risk 1.0 fill Critical+High and leave High empty; positional banding keeps the 10/30/60 split (57 / 171 / 342). See [Alert threshold](#alert-threshold).
 - [x] **Detect Git LFS pointer files.** If the repository is cloned without Git LFS, both apps say to run `git lfs pull` instead of failing when they read the scores (`scores_status()` in `elliptic_source.py`).
 - [x] **Warn on the Upload & Score page** that the unsupervised score is close to random on real labelled wallets.
 - [x] **Cache Git LFS files in CI** so each run doesn't use up the LFS bandwidth quota.
@@ -309,7 +309,7 @@ These come from a review of the changes above.
 **P1 — models and product**
 
 - [ ] **Derive wallet risk from transaction risk.** The transaction model is much stronger than the wallet model (F1 0.82 vs 0.29). Score each wallet from the transactions it sent or received (for example, the highest transaction risk via `AddrTx` / `TxAddr`), and compare that ranking with the wallet model on test wallets. `score_wallets.py` currently writes these links only for flagged wallets, so the export must cover every wallet.
-- [ ] **Break ties among alerts.** All 570 wallet alerts have one of two risk values (1.0 or 0.997). Calibrate the probabilities on the validation period (`CalibratedClassifierCV`), or add a secondary ranking signal, so alerts can be ordered and severity carries information.
+- [ ] **Break ties among alerts.** The 570 wallet alerts have 31 distinct risk values, but 229 tie at exactly 1.0 and the rest are packed into 0.9967–0.99998 — RF probabilities this close to 1.0 are not calibrated, so the ordering is nearly arbitrary. Severity currently breaks ties by transaction count. Calibrate the probabilities on the validation period (`CalibratedClassifierCV`), or add a principled secondary ranking signal, so alerts can be ordered and severity carries real information.
 - [ ] **Revisit "keep each wallet's highest-risk time step".** Taking the maximum over time steps pushes wallets that appear in many steps toward the top. Compare this with the latest or mean risk.
 - [ ] **Rank-scale the unsupervised signals.** `min_max_scale` in `risk_engine.py` lets one extreme wallet compress every other wallet toward 0 on heavy-tailed signals (amount, degree). Try percentile ranks, then re-run `run_unsupervised_elliptic_plus.py` and update the numbers above.
 
