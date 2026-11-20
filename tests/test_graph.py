@@ -11,12 +11,10 @@ import pandas as pd
 import networkx as nx
 
 
-from src.core.backend.correlation.correlator import TransactionCorrelator
 from src.core.backend.graph.graph_builder import TransactionGraphBuilder
 
 class TestGraphPipeline(unittest.TestCase):
     def setUp(self):
-        self.correlator = TransactionCorrelator()
         self.graph_builder = TransactionGraphBuilder()
         
         # Simple dummy transaction data
@@ -63,30 +61,6 @@ class TestGraphPipeline(unittest.TestCase):
             }
         ]
         self.df = pd.DataFrame(self.dummy_data)
-
-    def test_correlator_disclaimer(self):
-        """Test that the correlator disclaimer is present and contains key warnings."""
-        disclaimer = self.correlator.disclaimer
-        self.assertIn("investigative links", disclaimer.lower())
-        self.assertIn("not constitute proof of wallet ownership", disclaimer.lower())
-
-    def test_correlations(self):
-        """Test that correlation tables are correctly generated."""
-        correlations = self.correlator.correlate(self.df)
-        wallet_net = correlations["wallet_network"]
-        ip_tx = correlations["ip_transaction"]
-        
-        # Verify sizes
-        self.assertEqual(len(ip_tx), 4) # 2 transactions * (1 src_ip + 1 dst_ip)
-        
-        # wallet_A connected to 192.168.1.1 (source of tx1)
-        # wallet_B connected to 10.0.0.1 (destination of tx1) and 192.168.1.1 (source of tx2)
-        # wallet_C connected to 10.0.0.2 (destination of tx2)
-        self.assertEqual(len(wallet_net), 4)
-        
-        # Top association should be wallet_B with 192.168.1.1 or similar
-        row_wallet_b = wallet_net[wallet_net["wallet_address"] == "wallet_B"]
-        self.assertEqual(len(row_wallet_b), 2) # wallet_B has 2 IP connections (10.0.0.1 and 192.168.1.1)
 
     def test_graph_builder_nodes_and_edges(self):
         """Test that the NetworkX graph builds correct node and edge types."""

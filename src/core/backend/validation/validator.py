@@ -122,8 +122,11 @@ class TransactionValidator:
         for col in list(working_df.columns):
             report["missing_values_imputed"][col] = int(working_df[col].isna().sum())
 
-        # 2. Flag and separate records with missing critical fields (timestamp, txid)
-        critical_mask = working_df["timestamp"].isna() | working_df["txid"].isna()
+        # 2. Flag and separate records with a missing/unparseable timestamp or missing txid.
+        # Parsing the timestamp here (not just checking for null) means a row with a bad
+        # date is dropped as invalid instead of crashing the whole validation at step 5.
+        parsed_timestamp = pd.to_datetime(working_df["timestamp"], errors="coerce")
+        critical_mask = parsed_timestamp.isna() | working_df["txid"].isna()
         critical_missing_count = int(critical_mask.sum())
         report["invalid_reasons"]["missing_critical_fields"] += critical_missing_count
         
@@ -134,13 +137,12 @@ class TransactionValidator:
             report["invalid_records"] = report["total_records"]
             return working_df, report
 
-        # 3. Handle duplicates
-        # Find duplicates on txid (if txid is present)
+        # 3. Handle duplicates: keep the first occurrence of each txid and drop the rest,
+        # so a transaction repeated in the file is not counted twice in wallet features.
         duplicate_mask = working_df.duplicated(subset=["txid"], keep="first")
         duplicate_count = int(duplicate_mask.sum())
         report["duplicate_txids"] = duplicate_count
-        # We keep the first duplicate but log the warning.
-        # Alternatively, we could drop them, but keeping the first is standard for ingestion.
+        working_df = working_df[~duplicate_mask].copy()
         
         # 4. Cast and validate individual rows
         valid_indices = []
@@ -238,8 +240,8 @@ class TransactionValidator:
         cleaned_df = working_df.loc[valid_indices].copy()
         
         # 5. Type Casting and Imputations on the cleaned dataframe
-        # Cast timestamp to datetime
-        cleaned_df["timestamp"] = pd.to_datetime(cleaned_df["timestamp"])
+        # Cast timestamp to datetime (already verified parseable in step 2)
+        cleaned_df["timestamp"] = pd.to_datetime(cleaned_df["timestamp"], errors="coerce")
         
         # Imputations for missing categorical / recommended values
         # geo_country
@@ -261,8 +263,8 @@ class TransactionValidator:
         # block_height
         cleaned_df["block_height"] = cleaned_df["block_height"].fillna(0).astype(int)
         
-        # block_timestamp
-        cleaned_df["block_timestamp"] = pd.to_datetime(cleaned_df["block_timestamp"])
+        # block_timestamp (optional; an unparseable value becomes NaT, never an error)
+        cleaned_df["block_timestamp"] = pd.to_datetime(cleaned_df["block_timestamp"], errors="coerce")
         
         # fee
         cleaned_df["fee"] = cleaned_df["fee"].fillna(0.0).astype(float)

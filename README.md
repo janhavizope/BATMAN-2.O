@@ -144,6 +144,7 @@ Mean illicit F1 per time step:
 
 - **The dark-market shutdown breaks the transaction models.** F1 is high up to step 42 and falls to almost zero from step 43, after the dark-market shutdown. This matches the original Elliptic paper. The model does not detect the new illicit patterns that follow.
 - **Wallet prediction is much harder than the old numbers suggested.** With the earlier random split and block-number features, the wallet model reported F1 0.90 (precision 93.9%, recall 86.4%). Under a temporal split, without those features and without testing on wallets it trained on, F1 is 0.29. Most of the old score came from leakage: the model recognised when a wallet was active, or recognised wallets it had already seen.
+- **The wallet features are whole-lifetime aggregates, not causal.** `scripts/audit_wallet_feature_leakage.py` shows that every wallet model-input feature is identical across all of an address's time-step rows: they summarise the wallet's entire life, not activity up to each step. The temporal split still keeps training and test wallets disjoint (so the test numbers are not inflated by train/test overlap), but the features are not available in real time — when a wallet is first seen you cannot yet know its later transactions — so the reported wallet metrics are optimistic for a live deployment. It also means a wallet's risk does not change across its time steps (the "entity risk timeline" in the app is flat by construction).
 - **Choosing a threshold on the test set is slightly optimistic.** The alert threshold's precision and recall are measured on the same test rows used to pick it.
 
 ---
@@ -298,20 +299,24 @@ These come from a review of the changes above.
 - [x] **Detect Git LFS pointer files.** If the repository is cloned without Git LFS, both apps say to run `git lfs pull` instead of failing when they read the scores (`scores_status()` in `elliptic_source.py`).
 - [x] **Warn on the Upload & Score page** that the unsupervised score is close to random on real labelled wallets.
 - [x] **Cache Git LFS files in CI** so each run doesn't use up the LFS bandwidth quota.
+- [x] **Drop duplicate transactions on upload.** `validator.py` kept every row sharing a `txid` (it only counted them); it now keeps the first and drops the rest, so a repeated transaction is not double-counted in wallet features.
+- [x] **Stop a bad timestamp from failing a whole upload.** `validator.py` parses the timestamp during row validation, so one row with an unparseable date is dropped as invalid instead of raising `DateParseError` for the entire file.
+- [x] **Rank-scale the unsupervised signals.** `rank_scale` (was `min_max_scale`) in `risk_engine.py` scales each signal by percentile rank, so one extreme wallet no longer compresses the others toward 0 on heavy-tailed signals (amount, degree).
+- [x] **Remove dead/duplicate modules.** Deleted `feature_extractor.py` (superseded by `feature_engineering.py`), `analysis/validate_features.py` and `validation/feature_correlation_check.py` (two copies of the same unused diagnostic), and `correlation/correlator.py` (used only by a test) — none were imported by the apps or pipeline.
+- [x] **Make the pipeline's output messages honest.** `run_pipeline.py --unsupervised` no longer claims the desktop app reads `data/dev/results.json` (nothing reads it); the network-graph "entity risk timeline" now says the wallet risk is a single value, not a series that changes over time.
 
 #### Open
 
 **P0 — evaluation**
 
-- [ ] **Check the remaining wallet features for future information.** `lifetime_in_blocks` is still the 10th most important wallet feature. If it, `num_timesteps_appeared_in`, `total_txs` or `btc_transacted_total` are computed over a wallet's whole history, a training row from step 10 reveals activity after step 34. Check whether each one stays constant for an address across its time steps. If it does, drop it or recompute it up to each time step, then retrain.
-- [ ] **Choose the alert threshold on a validation period, not the test set.** For example, train on steps 1–29, pick the threshold on steps 30–34, then retrain on 1–34. Report test precision and recall at that threshold without tuning on the test set.
+- [x] **Checked the wallet features for future information** (`scripts/audit_wallet_feature_leakage.py`). Result: *every* wallet model-input feature is constant across an address's time steps, so all of them are whole-lifetime aggregates — not only `lifetime_in_blocks`, `num_timesteps_appeared_in`, `total_txs` and `btc_transacted_total`. The temporal split still keeps training and test wallets disjoint, so the test numbers are not inflated by overlap, but the features use hindsight (they summarise a wallet's whole life, including after it is first seen), so they are not valid for real-time scoring. **Still open:** recompute the features up to each time step — this needs the transaction-level data, not the aggregate CSV — then retrain, so the wallet scores become causal.
+- [ ] **Choose the alert threshold on a validation period, not the test set.** For example, train on steps 1–29, pick the threshold on steps 30–34, then retrain on 1–34. Report test precision and recall at that threshold without tuning on the test set. (Needs a supervised retrain + rescore, which regenerates the committed scores.)
 
 **P1 — models and product**
 
 - [ ] **Derive wallet risk from transaction risk.** The transaction model is much stronger than the wallet model (F1 0.82 vs 0.29). Score each wallet from the transactions it sent or received (for example, the highest transaction risk via `AddrTx` / `TxAddr`), and compare that ranking with the wallet model on test wallets. `score_wallets.py` currently writes these links only for flagged wallets, so the export must cover every wallet.
 - [ ] **Break ties among alerts.** The 570 wallet alerts have 31 distinct risk values, but 229 tie at exactly 1.0 and the rest are packed into 0.9967–0.99998 — RF probabilities this close to 1.0 are not calibrated, so the ordering is nearly arbitrary. Severity currently breaks ties by transaction count. Calibrate the probabilities on the validation period (`CalibratedClassifierCV`), or add a principled secondary ranking signal, so alerts can be ordered and severity carries real information.
-- [ ] **Revisit "keep each wallet's highest-risk time step".** Taking the maximum over time steps pushes wallets that appear in many steps toward the top. Compare this with the latest or mean risk.
-- [ ] **Rank-scale the unsupervised signals.** `min_max_scale` in `risk_engine.py` lets one extreme wallet compress every other wallet toward 0 on heavy-tailed signals (amount, degree). Try percentile ranks, then re-run `run_unsupervised_elliptic_plus.py` and update the numbers above.
+- [x] **Revisited "keep each wallet's highest-risk time step".** Because every wallet feature is constant across its time steps (see the audit above), a wallet's risk is identical at every step, so the maximum, latest and mean are the same — the choice has no effect on the current data. It will matter once the features are made causal; `score_wallets.py` keeps the maximum until then.
 
 **P2 — operations**
 

@@ -36,9 +36,13 @@ class TestRiskEngine(unittest.TestCase):
         result = add_normalized_components(wallets())
         for component in risk_engine.COMPONENT_WEIGHTS:
             self.assertIn(f"{component}_component", result.columns)
-        # The wallet that is highest on every signal gets the maximum score
+        # The wallet that is highest on every signal gets the maximum score, and the
+        # all-low wallet ranks lowest. With rank scaling a wallet only reaches exactly
+        # 0 when it is the unique minimum on every signal; "normal" ties "busier" at the
+        # bottom of several signals, so it sits low but above 0.
         self.assertAlmostEqual(result.loc["risky", "risk_score"], 100.0)
-        self.assertAlmostEqual(result.loc["normal", "risk_score"], 0.0)
+        self.assertEqual(result["risk_score"].idxmin(), "normal")
+        self.assertLess(result.loc["normal", "risk_score"], result.loc["busier", "risk_score"])
         self.assertTrue((result["risk_score"].between(0, 100)).all())
 
     def test_missing_network_fields_are_renormalised(self):

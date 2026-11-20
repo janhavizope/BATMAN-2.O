@@ -53,17 +53,20 @@ COMPONENT_WEIGHTS = {
 }
 
 
-def min_max_scale(values: pd.Series, invert: bool = False) -> pd.Series:
-    """Scale a numeric series to 0-100, optionally reversing its direction."""
-    minimum = values.min()
-    maximum = values.max()
-    value_range = maximum - minimum
+def rank_scale(values: pd.Series, invert: bool = False) -> pd.Series:
+    """Scale a numeric series to 0-100 by percentile rank, optionally reversed.
 
-    if value_range == 0:
-        scaled = pd.Series(0.0, index=values.index)
-    else:
-        scaled = (values - minimum) / value_range * 100
-
+    Ranking, not min-max: on heavy-tailed signals (amount, degree) a single
+    extreme wallet would otherwise compress every other wallet toward 0 under
+    linear min-max scaling. Ranking spreads the wallets out evenly so the score
+    reflects where a wallet sits relative to the others, not how far one
+    outlier stretches the range. The smallest value maps to 0 and the largest
+    to 100; ties share the average of their positions.
+    """
+    n = len(values)
+    if n <= 1:
+        return pd.Series(0.0, index=values.index)
+    scaled = (values.rank(method="average") - 1) / (n - 1) * 100
     return 100 - scaled if invert else scaled
 
 
@@ -109,13 +112,13 @@ def add_normalized_components(df: pd.DataFrame) -> pd.DataFrame:
     result = df.copy()
 
     # Isolation Forest assigns lower scores to more anomalous observations.
-    result["anomaly_component"] = min_max_scale(result["anomaly_score"], invert=True)
+    result["anomaly_component"] = rank_scale(result["anomaly_score"], invert=True)
     result["cluster_component"] = (result["cluster_id"] == -1).astype(float) * 100
 
     for component, signals in SIGNALS.items():
         columns = [col for col in signal_columns(result) if col in dict(signals)]
         if columns:
-            result[f"{component}_component"] = sum(min_max_scale(result[c]) for c in columns) / len(columns)
+            result[f"{component}_component"] = sum(rank_scale(result[c]) for c in columns) / len(columns)
 
     # Components missing from the data, or constant in it (e.g. no IP fields),
     # drop out and the remaining weights are renormalised.

@@ -70,6 +70,11 @@ def render_network_graph() -> None:
             "</div>",
             unsafe_allow_html=True,
         )
+        st.caption(
+            "The wallet model scores each wallet from whole-lifetime features, so a "
+            "wallet has a single risk value. Each line marks the time steps the wallet "
+            "was active at that score — it is not a risk that changes over time."
+        )
 
         fig_score = go.Figure()
         line_colors = ["#3498db", "#e74c3c", "#f1c40f", "#2ecc71", "#9b59b6", "#e67e22", "#1abc9c", "#34495e", "#ff6b81", "#7bed9f"]

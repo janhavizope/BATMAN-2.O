@@ -109,7 +109,8 @@ class TestTransactionPipeline(unittest.TestCase):
         """Test that invalid IPs are flagged and dropped."""
         row_invalid_ip = self.valid_row.copy()
         row_invalid_ip["src_ip"] = "999.999.999.999" # Invalid IPv4
-        
+        row_invalid_ip["txid"] = "b" * 64  # distinct txid (two txs never share one)
+
         df = pd.DataFrame([row_invalid_ip, self.valid_row])
         clean_df, report = self.validator.validate(df)
         
@@ -121,7 +122,8 @@ class TestTransactionPipeline(unittest.TestCase):
         """Test that ports outside 1-65535 are flagged and dropped."""
         row_invalid_port = self.valid_row.copy()
         row_invalid_port["src_port"] = 999999
-        
+        row_invalid_port["txid"] = "b" * 64  # distinct txid (two txs never share one)
+
         df = pd.DataFrame([row_invalid_port, self.valid_row])
         clean_df, report = self.validator.validate(df)
         
@@ -130,26 +132,38 @@ class TestTransactionPipeline(unittest.TestCase):
         self.assertEqual(report["invalid_reasons"]["invalid_port_range"], 1)
 
     def test_duplicate_txid(self):
-        """Test that duplicate transaction IDs are counted."""
+        """Test that duplicate transaction IDs are counted and all but the first are dropped."""
         row1 = self.valid_row.copy()
         row2 = self.valid_row.copy()
-        
+
         df = pd.DataFrame([row1, row2])
         clean_df, report = self.validator.validate(df)
-        
-        # We retain first duplicate, but count is tracked
+
+        # One duplicate is reported and removed: only the first occurrence is kept
         self.assertEqual(report["duplicate_txids"], 1)
-        # Note: validator currently keeps the first duplicate row, so valid_records = 2 but duplicates = 1
-        self.assertEqual(report["valid_records"], 2)
+        self.assertEqual(report["valid_records"], 1)
+        self.assertEqual(len(clean_df), 1)
+
+    def test_unparseable_timestamp_is_dropped_not_crashed(self):
+        """A row with a non-date timestamp is dropped as invalid, not raised as an error."""
+        bad = self.valid_row.copy()
+        bad["timestamp"] = "not-a-date"
+        df = pd.DataFrame([bad, self.valid_row])
+        clean_df, report = self.validator.validate(df)
+        self.assertEqual(report["valid_records"], 1)
+        self.assertEqual(report["invalid_reasons"]["missing_critical_fields"], 1)
+        self.assertEqual(len(clean_df), 1)
 
     def test_negative_values(self):
         """Test that negative amounts or fees are dropped."""
         row_neg_fee = self.valid_row.copy()
         row_neg_fee["fee"] = -0.01
-        
+        row_neg_fee["txid"] = "b" * 64  # distinct txids (two txs never share one)
+
         row_neg_amount = self.valid_row.copy()
         row_neg_amount["input_amounts[]"] = "[-1.0]"
-        
+        row_neg_amount["txid"] = "c" * 64
+
         df = pd.DataFrame([row_neg_fee, row_neg_amount, self.valid_row])
         clean_df, report = self.validator.validate(df)
         

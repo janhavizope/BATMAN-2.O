@@ -75,7 +75,11 @@ def run(steps) -> None:
 def main() -> None:
     if "--unsupervised" in sys.argv[1:]:
         run(UNSUPERVISED_STEPS)
-        print("\nDone. The desktop app (python main.py) reads data/dev/results.json.")
+        print("\nDone. Wrote data/dev/results.json: the unsupervised scores plus a "
+              "precision/recall/ROC-AUC report against the synthetic labels. This is a "
+              "research artifact — the web and desktop apps show the committed Elliptic++ "
+              "scores, not this file. To score your own data with this pipeline, use the "
+              "Upload & Score page in the web app.")
         return
 
     missing = missing_datasets()
