@@ -92,6 +92,11 @@ def workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(train_elliptic_plus, "EVAL_DIR", tmp_path / "evaluation")
     monkeypatch.setattr(train_elliptic_plus, "GRAPHS_ROOT", tmp_path / "graphs")
     monkeypatch.setattr(score_wallets, "DATA_DIR", data)
+    # tx-derived risk inputs: absent in this fixture, so score_wallets falls back
+    # to the wallet model (the path these tests exercise)
+    monkeypatch.setattr(score_wallets, "TX_SCORES_FILE", data / "tx_scores.parquet")
+    monkeypatch.setattr(score_wallets, "ADDRTX_FILE", data / "AddrTx_edgelist.csv")
+    monkeypatch.setattr(score_wallets, "TXADDR_FILE", data / "TxAddr_edgelist.csv")
     monkeypatch.setattr(score_wallets, "MODEL_FILE", models / "elliptic_plus_wallets_rf_model.joblib")
     monkeypatch.setattr(score_wallets, "SCORES_FILE", data / "wallet_scores.parquet")
     monkeypatch.setattr(score_wallets, "TIMELINE_FILE", data / "wallet_timeline.parquet")

@@ -165,9 +165,15 @@ def _load():
         _CACHE["wallets"] = wallets
         _CACHE["wallet_threshold"] = choose_threshold(wallets, WALLET_ALERT_BUDGET, MIN_WALLET_THRESHOLD)
         _CACHE["tx_threshold"] = choose_threshold(txs, TX_ALERT_BUDGET)
+        # Alerts are ranked by risk, then by a secondary signal that separates
+        # wallets tied on risk: tx_mean (how pervasive the illicit exposure is)
+        # when the scores carry it, otherwise transaction count. Peak risk
+        # (tx_max) saturates at 1.0 for many alerts, so this secondary key is
+        # what gives the severity bands information.
+        secondary = "tx_mean" if "tx_mean" in wallets.columns else "total_txs"
         _CACHE["flagged"] = (
             wallets[(wallets["split"] != "train") & (wallets["risk"] >= _CACHE["wallet_threshold"]["threshold"])]
-            .sort_values(["risk", "total_txs"], ascending=False)
+            .sort_values(["risk", secondary], ascending=False)
             .reset_index(drop=True)
         )
         # Severity by position in that ranked list (highest risk first)
@@ -218,11 +224,12 @@ def _feature_evidence(wallet: pd.Series, contributions: pd.DataFrame) -> list:
 
 def _reason(wallet: pd.Series, contributions: pd.DataFrame) -> str:
     risk_score = int(wallet["risk"] * 100)
-    reason = (f"Wallet {wallet['address'][:10]}... has a risk score of {risk_score}/100 "
-              f"from the Elliptic++ Random Forest wallet model. ")
+    reason = (f"Wallet {wallet['address'][:10]}... has a risk score of {risk_score}/100 — "
+              f"the highest risk among the transactions it took part in, from the Elliptic++ "
+              f"transaction model (much stronger than the wallet model). ")
     if not contributions.empty:
         top = ", ".join(_pretty(f) for f in contributions["feature"].head(3))
-        reason += f"The features that pushed its score up the most are: {top}. "
+        reason += f"The wallet model separately highlights these behavioural features: {top}. "
     if wallet["class"] == "unknown":
         reason += "This wallet has no ground-truth label: the score is a new prediction."
     else:
