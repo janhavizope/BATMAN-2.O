@@ -18,7 +18,7 @@ import score_transactions  # noqa: E402
 import score_wallets  # noqa: E402
 import train_elliptic  # noqa: E402
 import train_elliptic_plus  # noqa: E402
-from train_elliptic import TRAIN_LAST_STEP  # noqa: E402
+from train_elliptic import TRAIN_LAST_STEP, VAL_LAST_STEP  # noqa: E402
 
 RNG = np.random.default_rng(0)
 
@@ -109,18 +109,20 @@ def test_temporal_split_for_transactions():
     y = pd.Series([0, 1, 0, 1, 0, 1])
     steps = pd.Series([1, TRAIN_LAST_STEP, TRAIN_LAST_STEP + 1, 40, 2, 49])
     X_train, X_test, _, _ = train_elliptic_plus.split(X, y, None, steps)
-    assert list(X_train["f"]) == [0, 1, 4]
-    assert list(X_test["f"]) == [2, 3, 5]
+    assert list(X_train["f"]) == [0, 1, 4]   # steps 1, 29, 2 (<= TRAIN_LAST_STEP)
+    # step TRAIN_LAST_STEP+1 (f=2) is in the validation period -> neither set
+    assert list(X_test["f"]) == [3, 5]       # steps 40, 49 (> VAL_LAST_STEP)
 
 
 def test_wallet_split_uses_first_appearance():
-    X = pd.DataFrame({"f": range(5)})
-    y = pd.Series([0, 0, 1, 1, 0])
-    groups = pd.Series(["old", "old", "new", "new", "early"])
-    steps = pd.Series([30, 36, 35, 40, 5])
+    X = pd.DataFrame({"f": range(6)})
+    y = pd.Series([0, 0, 1, 1, 0, 0])
+    groups = pd.Series(["val", "val", "new", "new", "early", "early"])
+    steps = pd.Series([30, 36, 35, 40, 5, 20])
     X_train, X_test, _, _ = train_elliptic_plus.split(X, y, groups, steps)
-    # "old" trains on its step-30 row only; its step-36 row is in neither set
-    assert list(X_train["f"]) == [0, 4]
+    # "early" (first seen step 5) trains on both its rows; "val" (first seen 30)
+    # falls in the validation period, so it is in neither set; "new" (first seen 35) is test
+    assert list(X_train["f"]) == [4, 5]
     assert list(X_test["f"]) == [2, 3]
     assert set(groups[X_train.index]).isdisjoint(groups[X_test.index])
 
@@ -151,12 +153,12 @@ def test_train_and_score_wallets(workspace):
     score_wallets.main()
     scores = pd.read_parquet(workspace / "elliptic_plus" / "wallet_scores.parquet")
     assert scores["address"].is_unique
-    assert set(scores["split"]) <= {"train", "test", "unknown"}
-    # Wallets first seen after the training period are never tagged as training wallets
+    assert set(scores["split"]) <= {"train", "val", "test", "unknown"}
+    # Wallets first seen after the validation period are tagged as test wallets
     wallets = pd.read_csv(workspace / "elliptic_plus" / "wallets_features_classes_combined.csv")
     labelled = wallets[wallets["class"] != 3]
     first_step = labelled.groupby("address")["Time step"].min()
-    late = first_step[first_step > TRAIN_LAST_STEP].index
+    late = first_step[first_step > VAL_LAST_STEP].index
     assert (scores.set_index("address").loc[late, "split"] == "test").all()
 
     explanations = pd.read_parquet(workspace / "elliptic_plus" / "wallet_explanations.parquet")
@@ -169,7 +171,8 @@ def test_train_and_score_transactions(workspace):
     scores = pd.read_parquet(workspace / "elliptic_plus" / "tx_scores.parquet")
     labelled = scores[scores["class"] != "unknown"]
     assert (labelled.loc[labelled["split"] == "train", "time_step"] <= TRAIN_LAST_STEP).all()
-    assert (labelled.loc[labelled["split"] == "test", "time_step"] > TRAIN_LAST_STEP).all()
+    assert labelled.loc[labelled["split"] == "val", "time_step"].between(TRAIN_LAST_STEP + 1, VAL_LAST_STEP).all()
+    assert (labelled.loc[labelled["split"] == "test", "time_step"] > VAL_LAST_STEP).all()
     assert (scores.loc[scores["class"] == "unknown", "split"] == "unknown").all()
     assert scores["risk"].between(0, 1).all()
 

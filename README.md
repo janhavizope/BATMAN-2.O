@@ -53,17 +53,17 @@ Only wallets and transactions the model **did not train on** (the test split and
 
 ### Alert threshold
 
-The alert threshold is not a fixed 0.5. `choose_threshold` in [`src/data/elliptic_source.py`](src/data/elliptic_source.py) starts from the threshold with the best illicit F1 on the test split's precision-recall curve. It then raises the threshold until the number of flagged wallets fits a review budget (`WALLET_ALERT_BUDGET = 500`, `TX_ALERT_BUDGET = 1000`). Those budgets are the one place to change alert volume.
+The alert threshold is not a fixed 0.5. `choose_threshold` in [`src/data/elliptic_source.py`](src/data/elliptic_source.py) takes the threshold with the best illicit F1 on the **validation period** (steps 30–34, which the model did not train on), then raises it until the number of flagged wallets fits a review budget (`WALLET_ALERT_BUDGET = 500`, `TX_ALERT_BUDGET = 1000`). Precision and recall are reported on the **test period** (steps 35–49), which is never used to pick the threshold, so they are not optimistic. Those budgets are the one place to change alert volume.
 
-On the current scores the wallet threshold is 0.997. It flags 570 wallets (ties at the threshold push it past 500), down from 26,006 at 0.5. On test wallets that threshold gives precision 64% and recall 0.2%. Wallet-level prediction under a temporal split is weak (see [Results](#results-temporal-split)), so treat wallet alerts as leads, not findings. The transaction threshold is also 0.997. It flags 1,187 transactions with test precision 100% and recall 16%.
+On the current scores the wallet threshold is 0.997. It flags 508 wallets, down from the ~50k scoring at or above 0.5. On held-out test wallets that threshold gives precision 11% and recall 0.02%. Wallet-level prediction under a temporal split is weak (see [Results](#results-temporal-split)), so treat wallet alerts as leads, not findings. The transaction threshold is 0.993. It flags 1,022 transactions with test precision 100% and recall 2.9%.
 
-**Severity (Critical / High / Medium) is a wallet's position in the risk-ranked alert list:** Critical is the top 10%, High the next 30%, and Medium the rest (`CRITICAL_SHARE` and `HIGH_SHARE` in `elliptic_source.py`). Alerts are ranked by `(risk, total_txs)`, so wallets tied on model risk are ordered by transaction count — a weak secondary signal, but enough to keep the bands from collapsing. On the current scores the 570 alerts have **31 distinct risk values**, but they are tightly bunched against 1.0: 229 wallets sit at exactly 1.0 and the other 341 span the range 0.9967–0.99998. Banding by position gives **57 Critical, 171 High, 342 Medium**. The bands order the alerts for triage; they do not claim 57 wallets are meaningfully riskier than the next 171, because probabilities this close to 1.0 are not calibrated. Making severity carry real information needs a better-calibrated score (see [TODO](#open)), which the positional banding is a stopgap for — an earlier version banded by thirds of the probability range and a later one by strict rank, where a single 229-wide tie at 1.0 took all of Critical+High and left High empty.
+**Severity (Critical / High / Medium) is a wallet's position in the risk-ranked alert list:** Critical is the top 10%, High the next 30%, and Medium the rest (`CRITICAL_SHARE` and `HIGH_SHARE` in `elliptic_source.py`). Alerts are ranked by `(risk, total_txs)`, so wallets tied on model risk are ordered by transaction count — a weak secondary signal, but enough to keep the bands from collapsing. On the current scores the 508 alerts have **40 distinct risk values**, but they are tightly bunched against 1.0: 166 wallets sit at exactly 1.0 and the rest span roughly 0.9966–0.9999. Banding by position gives **51 Critical, 153 High, 304 Medium**. The bands order the alerts for triage; they do not claim the top 51 wallets are meaningfully riskier than the next 153, because probabilities this close to 1.0 are not calibrated. Making severity carry real information needs a better-calibrated score (see [TODO](#open)), which the positional banding is a stopgap for — an earlier version banded by thirds of the probability range and a later one by strict rank, where a single large tie at 1.0 took all of Critical+High and left High empty.
 
 ### Upload & Score
 
 Required columns: `txid`, `timestamp`, `input_addresses`, `output_addresses`, `input_amounts`, `output_amounts`. List fields use `|` or JSON arrays. `fee` and the network fields (`src_ip`, `dst_ip`, `src_port`, `dst_port`, `asn`, `geo_country`) are optional, because real on-chain data has no network fields. The page offers a template CSV. Uploads are validated with [`validator.py`](src/core/backend/validation/validator.py) and scored in memory with [`pipeline.py`](src/core/backend/pipeline.py). Scores are relative to the uploaded file, and nothing leaves the machine.
 
-The page shows a warning at the top. On real labelled Elliptic++ wallets this unsupervised score reached ROC-AUC 0.48, close to random guessing (see [Unsupervised pipeline](#unsupervised-pipeline-experimental)). Its HIGH and CRITICAL levels mean "unusual compared with the rest of the file", not "illicit".
+The page shows a warning at the top. On real labelled Elliptic++ wallets this unsupervised score reached ROC-AUC 0.54, close to random guessing (see [Unsupervised pipeline](#unsupervised-pipeline-experimental)). Its HIGH and CRITICAL levels mean "unusual compared with the rest of the file", not "illicit".
 
 ---
 
@@ -112,7 +112,7 @@ python scripts/score_wallets.py               # -> wallet_scores / wallet_timeli
 
 How the models are trained and evaluated:
 
-- **Temporal split.** Train on time steps 1–34 and test on 35–49, which is the standard Elliptic benchmark. Each wallet is assigned by the time step it first appears in. A wallet first seen in steps 1–34 trains, using only its rows up to step 34. A wallet first seen in step 35 or later is tested. No wallet is in both sets.
+- **Temporal split.** Train on time steps 1–29, hold out 30–34 as a validation period (used only to pick the alert threshold), and test on 35–49. Each wallet is assigned by the time step it first appears in: first seen in 1–29 trains (using only its rows up to step 29), 30–34 is a validation wallet, 35 or later is a test wallet. No wallet is in more than one set, and none trains on validation or test data.
 - **No time-revealing features.** `time_step` / `Time step`, and the wallet block-number features (`first_block_appeared_in`, `last_block_appeared_in`, `first_sent_block`, `first_received_block`), are used only for the split, never as model inputs.
 - **Metrics per time step.** Each metrics file includes `f1_illicit_by_time_step` for the test period.
 
@@ -124,28 +124,28 @@ Outputs:
 
 ### Results (temporal split)
 
-Test set: time steps 35–49. Illicit is the positive class.
+Training on steps 1–29, validation on 30–34 (threshold only), test on steps 35–49. Illicit is the positive class.
 
 | Model | Train / test rows | Accuracy | Precision (illicit) | Recall (illicit) | F1 (illicit) | ROC-AUC |
 |---|---|---|---|---|---|---|
-| Elliptic transactions | 29,894 / 16,670 | 97.76% | 91.7% | 72.0% | 0.807 | 0.939 |
-| Elliptic++ transactions | 29,894 / 16,670 | 97.97% | 95.4% | 72.3% | 0.822 | 0.932 |
-| Elliptic++ wallets | 245,667 / 114,345 | 92.47% | 48.7% | 20.2% | 0.286 | 0.862 |
+| Elliptic transactions | 26,381 / 16,670 | 97.37% | 86.6% | 70.5% | 0.777 | 0.933 |
+| Elliptic++ transactions | 26,381 / 16,670 | 97.53% | 88.8% | 71.0% | 0.789 | 0.930 |
+| Elliptic++ wallets | 215,725 / 114,345 | 84.73% | 19.2% | 32.7% | 0.242 | 0.770 |
 
 Mean illicit F1 per time step:
 
 | Model | Steps 35–42 | Steps 43–49 |
 |---|---|---|
-| Elliptic transactions | 0.88 | 0.04 |
-| Elliptic++ transactions | 0.90 | 0.07 |
-| Elliptic++ wallets | 0.26 | 0.14 |
+| Elliptic transactions | 0.86 | 0.04 |
+| Elliptic++ transactions | 0.87 | 0.04 |
+| Elliptic++ wallets | 0.28 | 0.16 |
 
 ### Evaluation notes
 
 - **The dark-market shutdown breaks the transaction models.** F1 is high up to step 42 and falls to almost zero from step 43, after the dark-market shutdown. This matches the original Elliptic paper. The model does not detect the new illicit patterns that follow.
-- **Wallet prediction is much harder than the old numbers suggested.** With the earlier random split and block-number features, the wallet model reported F1 0.90 (precision 93.9%, recall 86.4%). Under a temporal split, without those features and without testing on wallets it trained on, F1 is 0.29. Most of the old score came from leakage: the model recognised when a wallet was active, or recognised wallets it had already seen.
+- **Wallet prediction is much harder than the old numbers suggested.** With the earlier random split and block-number features, the wallet model reported F1 0.90 (precision 93.9%, recall 86.4%). Under a temporal split, without those features and without testing on wallets it trained on, illicit F1 is 0.24. Most of the old score came from leakage: the model recognised when a wallet was active, or recognised wallets it had already seen.
 - **The wallet features are whole-lifetime aggregates, not causal.** `scripts/audit_wallet_feature_leakage.py` shows that every wallet model-input feature is identical across all of an address's time-step rows: they summarise the wallet's entire life, not activity up to each step. The temporal split still keeps training and test wallets disjoint (so the test numbers are not inflated by train/test overlap), but the features are not available in real time — when a wallet is first seen you cannot yet know its later transactions — so the reported wallet metrics are optimistic for a live deployment. It also means a wallet's risk does not change across its time steps (the "entity risk timeline" in the app is flat by construction).
-- **Choosing a threshold on the test set is slightly optimistic.** The alert threshold's precision and recall are measured on the same test rows used to pick it.
+- **The threshold is chosen on a validation period, not the test set.** The models train on steps 1–29, the alert threshold is picked on the held-out validation period (steps 30–34), and precision/recall are reported on the test period (steps 35–49), which is never used for tuning. Holding 30–34 out of training costs some headline performance (for example wallet illicit F1 0.29 → 0.24 and ROC-AUC 0.86 → 0.77 versus training on 1–34), but the reported numbers are now honest for a model that has not seen the data it is measured on.
 
 ---
 
@@ -185,11 +185,11 @@ In this dataset almost every address appears in a single transaction, so many wa
 
 | Ranking | ROC-AUC | Precision@100 | Precision@500 | Precision@1000 |
 |---|---|---|---|---|
-| Unsupervised score (all labelled wallets) | 0.556 | 2% | 11% | 12% |
-| Unsupervised score (held-out test wallets) | 0.482 | 13% | 10% | 8% |
-| Supervised Random Forest (same test wallets) | 0.839 | 78% | 71% | 52% |
+| Unsupervised score (all labelled wallets) | 0.607 | 1% | 0.8% | 1.6% |
+| Unsupervised score (held-out test wallets) | 0.536 | 0% | 1.6% | 2.7% |
+| Supervised Random Forest (same test wallets) | 0.732 | 18% | 13% | 12.6% |
 
-The honest result: **on real Bitcoin behavioural features the hand-weighted unsupervised score is close to random** (ROC-AUC 0.48–0.56), while the supervised model reaches 0.84 on the same wallets. The fixed component weights that work on the synthetic data (which was built with injected fan-in / fan-out / burst patterns) do not capture what separates illicit wallets in Elliptic++. The unsupervised pipeline is useful as a label-free triage tool and for the Upload & Score page, but it is not a substitute for the supervised model where labels exist.
+The honest result: **on real Bitcoin behavioural features the rank-scaled unsupervised score is close to random** (ROC-AUC 0.54–0.61), while the supervised model reaches 0.73 on the same wallets. The fixed component weights that work on the synthetic data (which was built with injected fan-in / fan-out / burst patterns) do not capture what separates illicit wallets in Elliptic++. The unsupervised pipeline is useful as a label-free triage tool and for the Upload & Score page, but it is not a substitute for the supervised model where labels exist. (The supervised numbers here are lower than in [Results](#results-temporal-split) because the model now trains on steps 1–29, and this ranks one row per wallet rather than per time step.)
 
 ---
 
@@ -304,17 +304,17 @@ These come from a review of the changes above.
 - [x] **Rank-scale the unsupervised signals.** `rank_scale` (was `min_max_scale`) in `risk_engine.py` scales each signal by percentile rank, so one extreme wallet no longer compresses the others toward 0 on heavy-tailed signals (amount, degree).
 - [x] **Remove dead/duplicate modules.** Deleted `feature_extractor.py` (superseded by `feature_engineering.py`), `analysis/validate_features.py` and `validation/feature_correlation_check.py` (two copies of the same unused diagnostic), and `correlation/correlator.py` (used only by a test) — none were imported by the apps or pipeline.
 - [x] **Make the pipeline's output messages honest.** `run_pipeline.py --unsupervised` no longer claims the desktop app reads `data/dev/results.json` (nothing reads it); the network-graph "entity risk timeline" now says the wallet risk is a single value, not a series that changes over time.
+- [x] **Choose the alert threshold on a validation period, not the test set.** The models now train on steps 1–29, `choose_threshold` picks the threshold on the held-out validation period (30–34), and precision/recall are reported on the test period (35–49), never used for tuning. See [Alert threshold](#alert-threshold) and the [evaluation notes](#evaluation-notes).
 
 #### Open
 
 **P0 — evaluation**
 
 - [x] **Checked the wallet features for future information** (`scripts/audit_wallet_feature_leakage.py`). Result: *every* wallet model-input feature is constant across an address's time steps, so all of them are whole-lifetime aggregates — not only `lifetime_in_blocks`, `num_timesteps_appeared_in`, `total_txs` and `btc_transacted_total`. The temporal split still keeps training and test wallets disjoint, so the test numbers are not inflated by overlap, but the features use hindsight (they summarise a wallet's whole life, including after it is first seen), so they are not valid for real-time scoring. **Still open:** recompute the features up to each time step — this needs the transaction-level data, not the aggregate CSV — then retrain, so the wallet scores become causal.
-- [ ] **Choose the alert threshold on a validation period, not the test set.** For example, train on steps 1–29, pick the threshold on steps 30–34, then retrain on 1–34. Report test precision and recall at that threshold without tuning on the test set. (Needs a supervised retrain + rescore, which regenerates the committed scores.)
 
 **P1 — models and product**
 
-- [ ] **Derive wallet risk from transaction risk.** The transaction model is much stronger than the wallet model (F1 0.82 vs 0.29). Score each wallet from the transactions it sent or received (for example, the highest transaction risk via `AddrTx` / `TxAddr`), and compare that ranking with the wallet model on test wallets. `score_wallets.py` currently writes these links only for flagged wallets, so the export must cover every wallet.
+- [ ] **Derive wallet risk from transaction risk.** The transaction model is much stronger than the wallet model (F1 0.79 vs 0.24). Score each wallet from the transactions it sent or received (for example, the highest transaction risk via `AddrTx` / `TxAddr`), and compare that ranking with the wallet model on test wallets. `score_wallets.py` currently writes these links only for flagged wallets, so the export must cover every wallet.
 - [ ] **Break ties among alerts.** The 570 wallet alerts have 31 distinct risk values, but 229 tie at exactly 1.0 and the rest are packed into 0.9967–0.99998 — RF probabilities this close to 1.0 are not calibrated, so the ordering is nearly arbitrary. Severity currently breaks ties by transaction count. Calibrate the probabilities on the validation period (`CalibratedClassifierCV`), or add a principled secondary ranking signal, so alerts can be ordered and severity carries real information.
 - [x] **Revisited "keep each wallet's highest-risk time step".** Because every wallet feature is constant across its time steps (see the audit above), a wallet's risk is identical at every step, so the maximum, latest and mean are the same — the choice has no effect on the current data. It will matter once the features are made causal; `score_wallets.py` keeps the maximum until then.
 

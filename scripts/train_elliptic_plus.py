@@ -10,12 +10,13 @@ Trains Random Forest classifiers on the Elliptic++ dataset
 Steps (same as train_elliptic.py):
     1. Load data from data/elliptic_plus/
     2. Keep only labelled rows (class 1 = illicit, 2 = licit; 3 = unknown is dropped)
-    3. Temporal train/test split: train on time steps 1-34, test on 35-49.
-       Wallets appear once per time step, so they are split by the time step
-       they first appear in: a wallet first seen in steps 1-34 is a training
-       wallet (only its rows up to step 34 are used), a wallet first seen in
-       step 35 or later is a test wallet. The model is never tested on a
-       wallet it trained on, and never trains on data from the test period.
+    3. Temporal split: train on time steps 1-29, hold out 30-34 as a validation
+       period (used only to pick the alert threshold), test on 35-49. Wallets
+       appear once per time step, so they are split by the time step they first
+       appear in: first seen in 1-29 is a training wallet (only its rows up to
+       step 29 are used), 30-34 is a validation wallet, 35+ is a test wallet. The
+       model is never tested on a wallet it trained on, and never trains on data
+       from the validation or test periods.
     4. Drop time-revealing features (the time step, and the wallet
        block-number features) so the model learns behaviour, not timing
     5. Train RandomForestClassifier (class_weight="balanced")
@@ -37,7 +38,7 @@ import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 
 from train_elliptic import (
-    MODEL_DIR, RANDOM_STATE, TRAIN_LAST_STEP, evaluate, print_metrics, save_graphs,
+    MODEL_DIR, RANDOM_STATE, TRAIN_LAST_STEP, VAL_LAST_STEP, evaluate, print_metrics, save_graphs,
 )
 from src.config import ELLIPTIC_PLUS_DIR, EVALUATION_DIR, GRAPHS_DIR
 
@@ -75,13 +76,16 @@ def load_wallets():
 
 
 def split(X, y, groups, time_steps):
-    """Temporal split. With groups (wallets), each group goes to one side only."""
+    """Temporal split into train and test; steps TRAIN_LAST_STEP+1..VAL_LAST_STEP
+    are the validation period and belong to neither returned set (they are used
+    later, in elliptic_source.choose_threshold, to pick the alert threshold).
+    With groups (wallets), each group goes to one side by its first time step."""
     train = time_steps <= TRAIN_LAST_STEP
     if groups is None:
-        test = ~train
+        test = time_steps > VAL_LAST_STEP
     else:
         first_step = time_steps.groupby(groups).transform("min")
-        test = first_step > TRAIN_LAST_STEP
+        test = first_step > VAL_LAST_STEP
     train, test = train.to_numpy(), test.to_numpy()
     return X[train], X[test], y[train], y[test]
 

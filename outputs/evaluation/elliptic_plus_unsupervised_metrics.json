@@ -3,38 +3,38 @@
   "valid_transactions": 202804,
   "wallets_scored": 822942,
   "risk_levels": {
-    "LOW": 749023,
-    "MEDIUM": 73413,
-    "HIGH": 504,
-    "CRITICAL": 2
+    "MEDIUM": 424035,
+    "LOW": 177413,
+    "HIGH": 159203,
+    "CRITICAL": 62291
   },
   "all_labelled_wallets": {
     "wallets": 265354,
     "illicit_rate": 0.053762144154601024,
-    "roc_auc": 0.5564897334360096,
-    "precision_at_100": 0.02,
-    "precision_at_500": 0.108,
-    "precision_at_1000": 0.115,
-    "precision_at_5000": 0.0882
+    "roc_auc": 0.6072085947455064,
+    "precision_at_100": 0.01,
+    "precision_at_500": 0.008,
+    "precision_at_1000": 0.016,
+    "precision_at_5000": 0.0434
   },
   "test_wallets": {
     "unsupervised": {
       "wallets": 92451,
       "illicit_rate": 0.05288206725724979,
-      "roc_auc": 0.4815490887492423,
-      "precision_at_100": 0.13,
-      "precision_at_500": 0.098,
-      "precision_at_1000": 0.081,
-      "precision_at_5000": 0.0346
+      "roc_auc": 0.5356067929524211,
+      "precision_at_100": 0.0,
+      "precision_at_500": 0.016,
+      "precision_at_1000": 0.027,
+      "precision_at_5000": 0.0476
     },
     "supervised_random_forest": {
       "wallets": 92451,
       "illicit_rate": 0.05288206725724979,
-      "roc_auc": 0.8390853370675833,
-      "precision_at_100": 0.78,
-      "precision_at_500": 0.706,
-      "precision_at_1000": 0.52,
-      "precision_at_5000": 0.331
+      "roc_auc": 0.7321405920183002,
+      "precision_at_100": 0.18,
+      "precision_at_500": 0.13,
+      "precision_at_1000": 0.126,
+      "precision_at_5000": 0.1378
     }
   }
 }

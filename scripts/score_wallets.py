@@ -26,8 +26,8 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from train_elliptic import MODEL_DIR
-from train_elliptic_plus import DATA_DIR, load_wallets, split
+from train_elliptic import MODEL_DIR, TRAIN_LAST_STEP, VAL_LAST_STEP
+from train_elliptic_plus import DATA_DIR, TIME_COLUMN
 
 MODEL_FILE = MODEL_DIR / "elliptic_plus_wallets_rf_model.joblib"
 SCORES_FILE = DATA_DIR / "wallet_scores.parquet"
@@ -78,17 +78,19 @@ def main():
     saved = joblib.load(MODEL_FILE)
     model, features = saved["model"], saved["features"]
 
-    # Recreate the training split to tag train/test wallets
-    X, y, groups, time_steps = load_wallets()
-    X_train, X_test, _, _ = split(X.fillna(0), y, groups, time_steps)
-    split_of = pd.concat([
-        pd.Series("train", index=groups.loc[X_train.index].unique()),
-        pd.Series("test", index=groups.loc[X_test.index].unique()),
-    ])
-
     print("Scoring all wallets ...")
     df = pd.read_csv(DATA_DIR / "wallets_features_classes_combined.csv")
     df["risk"] = model.predict_proba(df[features].fillna(0))[:, 1]
+
+    # Tag each wallet by the period it first appears in (labelled wallets only),
+    # matching the temporal split in train_elliptic_plus: train 1..TRAIN_LAST_STEP,
+    # validation (used to pick the alert threshold) up to VAL_LAST_STEP, test after.
+    # Unlabelled wallets stay 'unknown'. A wallet belongs wholly to one split.
+    labelled = df[df["class"] != 3]
+    first_step = labelled.groupby("address")[TIME_COLUMN].min()
+    bands = pd.cut(first_step, bins=[-1, TRAIN_LAST_STEP, VAL_LAST_STEP, float("inf")],
+                   labels=["train", "val", "test"])
+    split_of = pd.Series(bands.astype(str), index=first_step.index)
     df["split"] = df["address"].map(split_of).fillna("unknown")
 
     top_features = (

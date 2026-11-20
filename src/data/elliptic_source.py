@@ -76,19 +76,22 @@ def is_available() -> bool:
 
 
 def choose_threshold(scores: pd.DataFrame, budget: int, floor: float = 0.0) -> dict:
-    """Pick an alert threshold from the precision-recall curve of the test split.
+    """Pick an alert threshold on the validation period, report it on the test period.
 
-    Starts at the threshold with the best illicit F1 on held-out test rows and
-    raises it until at most `budget` rows the model did not train on are
-    flagged. Rows tied at the threshold are all flagged, so the count can
-    exceed the budget. Returns the threshold, the test precision and recall
-    it gives, and the number of rows it flags.
+    Takes the threshold with the best illicit F1 on the validation split (time
+    steps the model did not train on and that are not the test set), then raises
+    it until at most `budget` non-training rows are flagged. Precision and recall
+    are measured on the held-out test split, which is never used to choose the
+    threshold, so they are not optimistic. Rows tied at the threshold are all
+    flagged, so the flagged count can exceed the budget. If there is no
+    validation split (older score files), only the budget and floor apply.
     """
+    val = scores[scores["split"] == "val"]
     test = scores[scores["split"] == "test"]
     pool = scores.loc[scores["split"] != "train", "risk"]
     threshold = floor
-    if test["class"].eq("illicit").any() and test["class"].ne("illicit").any():
-        precision, recall, thresholds = precision_recall_curve(test["class"] == "illicit", test["risk"])
+    if val["class"].eq("illicit").any() and val["class"].ne("illicit").any():
+        precision, recall, thresholds = precision_recall_curve(val["class"] == "illicit", val["risk"])
         f1 = 2 * precision * recall / np.clip(precision + recall, 1e-12, None)
         threshold = max(threshold, float(thresholds[np.argmax(f1[:-1])]))
     if len(pool) > budget:

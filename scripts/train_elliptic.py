@@ -9,9 +9,10 @@ Steps:
     1. Load features + labels from data/elliptic/
     2. Keep only labelled transactions (class 1 = illicit, 2 = licit;
        "unknown" rows have no ground truth and are dropped)
-    3. Temporal train/test split: train on time steps 1-34, test on 35-49
-       (the standard Elliptic benchmark split). time_step itself is not a
-       model input, so the model cannot learn *when* a transaction happened.
+    3. Temporal split: train on time steps 1-29, hold out 30-34 as a validation
+       period (used to pick the alert threshold in the app, never for training),
+       and test on 35-49. time_step itself is not a model input, so the model
+       cannot learn *when* a transaction happened.
     4. Train RandomForestClassifier (class_weight="balanced" because only
        ~10% of labelled transactions are illicit)
     5. Evaluate on time steps 35-49: precision/recall/F1, confusion matrix,
@@ -57,16 +58,26 @@ MODEL_FILE = MODEL_DIR / "elliptic_rf_model.joblib"
 METRICS_FILE = EVALUATION_DIR / "elliptic_metrics.json"
 GRAPHS_DIR = GRAPHS_ROOT / "elliptic"
 
-# Temporal split: train on time steps 1..TRAIN_LAST_STEP, test on the rest
-TRAIN_LAST_STEP = 34
-TEST_LABEL = f"test: time steps {TRAIN_LAST_STEP + 1}+"
+# Temporal split: train on steps 1..TRAIN_LAST_STEP, hold out VAL_LAST_STEP..
+# for choosing the alert threshold, test on the rest. The validation steps
+# (TRAIN_LAST_STEP+1 .. VAL_LAST_STEP) are in neither the training nor the test
+# set, so the threshold is picked on data the model did not train on and the
+# test metrics are never tuned on.
+TRAIN_LAST_STEP = 29
+VAL_LAST_STEP = 34
+TEST_LABEL = f"test: time steps {VAL_LAST_STEP + 1}+"
 RANDOM_STATE = 42
 
 
 def temporal_split(X, y, time_steps):
-    """Train on rows from time steps <= TRAIN_LAST_STEP, test on later rows."""
+    """Train on steps <= TRAIN_LAST_STEP, test on steps > VAL_LAST_STEP.
+
+    Steps TRAIN_LAST_STEP+1 .. VAL_LAST_STEP are the validation period and
+    belong to neither returned set (they are used later to pick the threshold).
+    """
     train = (time_steps <= TRAIN_LAST_STEP).to_numpy()
-    return X[train], X[~train], y[train], y[~train]
+    test = (time_steps > VAL_LAST_STEP).to_numpy()
+    return X[train], X[test], y[train], y[test]
 
 
 def f1_by_time_step(y_test, y_pred, time_steps):

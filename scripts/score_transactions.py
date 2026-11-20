@@ -20,8 +20,8 @@ Run (from the project root, after train_elliptic_plus.py txs):
 import joblib
 import pandas as pd
 
-from train_elliptic import MODEL_DIR
-from train_elliptic_plus import DATA_DIR, TIME_COLUMN, split
+from train_elliptic import MODEL_DIR, TRAIN_LAST_STEP, VAL_LAST_STEP
+from train_elliptic_plus import DATA_DIR, TIME_COLUMN
 from src.config import ELLIPTIC_DIR
 
 MODEL_FILE = MODEL_DIR / "elliptic_plus_txs_rf_model.joblib"
@@ -37,18 +37,18 @@ def main():
     saved = joblib.load(MODEL_FILE)
     model, features = saved["model"], saved["features"]
 
-    # Same merge and split as train_elliptic_plus.load_txs, keeping txId
     df = pd.read_csv(DATA_DIR / "txs_features.csv").merge(
         pd.read_csv(DATA_DIR / "txs_classes.csv"), on="txId"
     )
-    labelled = df[df["class"] != 3]
-    X = labelled.drop(columns=["txId", "class", TIME_COLUMN]).fillna(0)
-    y = (labelled["class"] == 1).astype(int)
-    X_train, X_test, _, _ = split(X, y, None, labelled[TIME_COLUMN])
-
+    # Tag each transaction by the period it falls in, matching the temporal split
+    # in train_elliptic_plus: train 1..TRAIN_LAST_STEP, validation (used to pick
+    # the alert threshold) up to VAL_LAST_STEP, test after it. Unlabelled rows
+    # stay 'unknown'.
+    step, labelled = df[TIME_COLUMN], df["class"] != 3
     df["split"] = "unknown"
-    df.loc[X_train.index, "split"] = "train"
-    df.loc[X_test.index, "split"] = "test"
+    df.loc[labelled & (step <= TRAIN_LAST_STEP), "split"] = "train"
+    df.loc[labelled & (step > TRAIN_LAST_STEP) & (step <= VAL_LAST_STEP), "split"] = "val"
+    df.loc[labelled & (step > VAL_LAST_STEP), "split"] = "test"
 
     print("Scoring all transactions ...")
     df["risk"] = model.predict_proba(df[features].fillna(0))[:, 1]

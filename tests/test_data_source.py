@@ -15,8 +15,9 @@ def wallet_scores():
     # (split, class, risk) for 12 wallets
     spec = [
         ("train", "illicit", 0.99), ("train", "licit", 0.10),
-        ("test", "illicit", 0.97), ("test", "illicit", 0.90), ("test", "illicit", 0.40),
-        ("test", "licit", 0.60), ("test", "licit", 0.05), ("test", "licit", 0.02),
+        ("test", "illicit", 0.97), ("test", "illicit", 0.90),
+        ("val", "illicit", 0.70), ("val", "licit", 0.50),      # validation period: picks the threshold
+        ("test", "licit", 0.05), ("test", "licit", 0.02),
         ("unknown", "unknown", 0.95), ("unknown", "unknown", 0.80),
         ("unknown", "unknown", 0.55), ("unknown", "unknown", 0.01),
     ]
@@ -76,16 +77,19 @@ def test_choose_threshold_respects_budget(scores):
     result = elliptic_source.choose_threshold(scores, budget=3)
     pool = scores[scores["split"] != "train"]
     assert result["flagged"] == (pool["risk"] >= result["threshold"]).sum() == 3
-    # top 3 non-training wallets are 0.97, 0.95 and 0.90
+    # budget raises the threshold to the 3rd-largest non-training risk (0.90);
+    # precision and recall are reported on the test split (both test illicit, 0.97
+    # and 0.90, are flagged)
     assert result["threshold"] == pytest.approx(0.90)
     assert result["precision"] == 1.0
-    assert result["recall"] == pytest.approx(2 / 3)
+    assert result["recall"] == 1.0
 
 
 def test_choose_threshold_uses_best_f1_when_under_budget(scores):
     result = elliptic_source.choose_threshold(scores, budget=1_000)
-    # Test rows: at 0.40 precision 3/4, recall 1 (F1 0.86) beats 0.90's 1 and 2/3 (F1 0.80)
-    assert result["threshold"] == pytest.approx(0.40)
+    # Under budget, the threshold is the best-F1 point on the VALIDATION split
+    # (illicit 0.70 vs licit 0.50 -> 0.70), not tuned on the test rows
+    assert result["threshold"] == pytest.approx(0.70)
     assert result["recall"] == 1.0
 
 
