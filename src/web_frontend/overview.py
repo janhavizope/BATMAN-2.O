@@ -16,7 +16,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from src.web_frontend.components import render_metric_card, render_dev_badge, render_header
-from src.data.data_manager import get_overview_stats, get_alerts_df
+from src.data.data_manager import get_overview_stats, get_alerts_df, get_model_drift
 
 
 def render_overview() -> None:
@@ -177,3 +177,33 @@ def render_overview() -> None:
         f"</div>",
         unsafe_allow_html=True,
     )
+
+    # --- Row 4: Model performance over time (drift) -------------------------
+    drift = get_model_drift()
+    if drift["steps"]:
+        st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
+        st.markdown(
+            "<div style='color:#c0c0c0; font-family:\"Orbitron\", sans-serif; font-size:13px; font-weight:bold; margin-bottom:8px;'>"
+            "Model Performance Over Time"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        # Red where the model has effectively failed (illicit F1 below 0.5)
+        colors = ["#f2353c" if f < 0.5 else "#21d093" for f in drift["f1"]]
+        fig_drift = go.Figure(go.Bar(
+            x=[f"Step {s}" for s in drift["steps"]], y=drift["f1"], marker_color=colors,
+        ))
+        fig_drift.update_layout(
+            plot_bgcolor="#0a0a0f", paper_bgcolor="#0a0a0f",
+            font=dict(color="#c0c0c0", family="JetBrains Mono, monospace", size=10),
+            yaxis=dict(title="Illicit F1", range=[0, 1], gridcolor="#1a2630"),
+            xaxis=dict(gridcolor="#1a2630"),
+            margin=dict(l=40, r=20, t=10, b=40), height=280, showlegend=False,
+        )
+        st.plotly_chart(fig_drift, width="stretch")
+        st.caption(
+            "Illicit-F1 of the transaction model on each held-out test time step. Detection is "
+            "strong through step 42 and collapses after step 43 (the dark-market shutdown): the "
+            "model does not recognise the new illicit patterns that follow. Models like this need "
+            "retraining whenever illicit behaviour shifts."
+        )

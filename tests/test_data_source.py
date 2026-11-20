@@ -165,6 +165,16 @@ def test_scores_status_ok_and_missing(scores, tmp_path, monkeypatch):
     assert elliptic_source.scores_status() == "missing"
 
 
+def test_model_drift_reads_per_step_f1():
+    """get_model_drift exposes the transaction model's illicit F1 per test time step."""
+    drift = elliptic_source.get_model_drift()
+    assert len(drift["steps"]) == len(drift["f1"]) > 0
+    assert all(isinstance(s, int) for s in drift["steps"])
+    assert all(0.0 <= f <= 1.0 for f in drift["f1"])
+    # The documented collapse: later steps (post dark-market shutdown) score far lower
+    assert min(drift["f1"]) < 0.5 < max(drift["f1"])
+
+
 def test_transactions_hide_training_rows(scores):
     txs = elliptic_source.get_transactions_df()
     assert set(txs["Transaction ID"]) == {"3", "4", "5", "6"}

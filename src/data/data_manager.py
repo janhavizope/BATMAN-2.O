@@ -14,6 +14,7 @@ from src.data.elliptic_source import (  # noqa: F401  (re-exported)
     get_entity_ids,
     get_explainability_data,
     get_graph_data,
+    get_model_drift,
     get_overview_stats,
     get_scoreboard,
     get_thresholds,

@@ -15,7 +15,9 @@ import networkx as nx
 import pandas as pd
 from sklearn.metrics import precision_recall_curve
 
-from src.config import ELLIPTIC_PLUS_DIR as DATA_DIR
+import json
+
+from src.config import ELLIPTIC_PLUS_DIR as DATA_DIR, EVALUATION_DIR
 
 WALLET_SCORES = DATA_DIR / "wallet_scores.parquet"
 WALLET_TIMELINE = DATA_DIR / "wallet_timeline.parquet"
@@ -112,6 +114,23 @@ def get_thresholds() -> dict:
     """Wallet and transaction alert thresholds, with their test precision/recall."""
     data = _load()
     return {"wallet": data["wallet_threshold"], "transaction": data["tx_threshold"]}
+
+
+def get_model_drift() -> dict:
+    """Illicit-F1 of the Elliptic++ transaction model on each test time step.
+
+    Shows how detection degrades over time: it is strong through step 42 and
+    collapses after the step-43 dark-market shutdown, so the models need
+    retraining when illicit behaviour shifts. Returns {'steps': [...], 'f1':
+    [...]} (empty if the metrics file is missing).
+    """
+    try:
+        by_step = json.loads((EVALUATION_DIR / "elliptic_plus_txs_metrics.json").read_text())
+        by_step = by_step["f1_illicit_by_time_step"]
+    except (OSError, ValueError, KeyError):
+        return {"steps": [], "f1": []}
+    steps = sorted(int(s) for s in by_step)
+    return {"steps": steps, "f1": [float(by_step[str(s)]) for s in steps]}
 
 
 def _wallet_threshold() -> float:
