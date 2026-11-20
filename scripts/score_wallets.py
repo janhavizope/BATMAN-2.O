@@ -150,10 +150,26 @@ def main():
     print(f"Scored {len(out)} wallets -> {SCORES_FILE}")
     print(out.groupby("split")["risk"].describe())
 
-    # Risk per time step for flagged wallets that the model did not train on
     flagged = out[(out["risk"] >= FLAG_THRESHOLD) & (out["split"] != "train")]["address"]
-    timeline = df[df["address"].isin(flagged)][["address", "Time step", "risk"]]
-    timeline.rename(columns={"Time step": "time_step"}).to_parquet(TIMELINE_FILE, index=False, compression="zstd")
+    flagged_set = set(flagged)
+
+    # Which transactions each flagged wallet took part in
+    edges = wallet_tx_edges(flagged_set)
+
+    # Causal risk per time step: by each step, the highest risk among the
+    # wallet's transactions up to that step. The series rises to the wallet's
+    # headline risk (its peak transaction risk) instead of being flat.
+    if edges is not None and TX_SCORES_FILE.exists():
+        meta = pd.read_parquet(TX_SCORES_FILE, columns=["txId", "time_step", "risk"])
+        wl = edges.merge(meta, on="txId").sort_values(["address", "time_step"])
+        wl["cummax"] = wl.groupby("address")["risk"].cummax()
+        timeline = (wl.groupby(["address", "time_step"])["cummax"].max()
+                    .reset_index().rename(columns={"cummax": "risk"}))
+    else:
+        # Fallback (no transaction data): the wallet's constant risk per active step
+        timeline = (df[df["address"].isin(flagged_set)][["address", "Time step", "risk"]]
+                    .rename(columns={"Time step": "time_step"}))
+    timeline.to_parquet(TIMELINE_FILE, index=False, compression="zstd")
     print(f"Timeline for {flagged.size} flagged wallets -> {TIMELINE_FILE}")
 
     # The wallet model's per-feature view of each flagged wallet (behavioural
@@ -170,8 +186,6 @@ def main():
     print(f"Explanations for {len(explained)} wallets -> {EXPLANATIONS_FILE} "
           f"(max reconstruction error {gap:.2e})")
 
-    # Which transactions each flagged wallet took part in
-    edges = wallet_tx_edges(set(flagged))
     if edges is not None:
         edges.to_parquet(WALLET_TX_FILE, index=False, compression="zstd")
         print(f"{len(edges)} wallet-transaction links for flagged wallets -> {WALLET_TX_FILE}")

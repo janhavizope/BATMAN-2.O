@@ -71,9 +71,9 @@ def render_network_graph() -> None:
             unsafe_allow_html=True,
         )
         st.caption(
-            "The wallet model scores each wallet from whole-lifetime features, so a "
-            "wallet has a single risk value. Each line marks the time steps the wallet "
-            "was active at that score — it is not a risk that changes over time."
+            "A wallet's risk is the highest risk of the transactions it took part in. "
+            "Each line shows that risk accruing over time — by each step, the highest "
+            "risk among the wallet's transactions up to that step."
         )
 
         fig_score = go.Figure()
