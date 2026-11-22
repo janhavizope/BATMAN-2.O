@@ -13,8 +13,17 @@ unchanged.
 
 This is the firsthand, real-time feed: no public API, no rate limit, every
 transaction the moment the node sees it. It needs a running node with ZMQ
-enabled (see the README's node setup). A pruned node is fine; its chainstate
-still resolves the prevouts of current mempool transactions.
+enabled (see the README's node setup) and Bitcoin Core 25.0 or newer
+(getrawtransaction verbosity 2). A pruned node is fine; its chainstate still
+resolves the prevouts of current mempool transactions.
+
+ZMQ is publish/subscribe: the node does not queue messages for a subscriber
+that is not connected. So the subscriber must stay connected the whole time.
+ZMQListener keeps one SUB socket open on a background thread and puts every
+announced txid into an in-memory queue; each monitor cycle drains that queue
+(fetch_from_listener). Nothing announced between cycles is lost. Bitcoin
+Core numbers each message per topic, so the listener counts any gap in that
+sequence and reports it in stats() instead of losing messages silently.
 
 pyzmq is imported lazily inside connect_subscriber, so the mapping functions
 here can be imported and tested without pyzmq or a node present.
@@ -22,6 +31,9 @@ here can be imported and tested without pyzmq or a node present.
 
 from __future__ import annotations
 
+import struct
+import threading
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -121,54 +133,213 @@ def connect_subscriber(endpoint: str):
     return socket
 
 
-def fetch_zmq_transactions(rpc: BitcoinRPC, endpoint: str, max_tx: int = 40,
-                           timeout_ms: int = 10_000) -> pd.DataFrame:
-    """Collect up to `max_tx` live transactions from the node's ZMQ feed.
+# Most txids the listener holds between cycles. At a few transactions per
+# second this is hours of traffic; past it the oldest are dropped and counted.
+DEFAULT_QUEUE_SIZE = 200_000
+# A jump in the sequence number larger than this is a node restart (the
+# counter starts again from 0), not that many lost messages.
+SEQUENCE_RESET_GAP = 1_000_000
+POLL_MS = 500
 
-    Waits up to `timeout_ms` for each message; returns what it gathered when
-    the batch is full or the feed goes quiet. A transaction the node can no
-    longer resolve is skipped, not fatal.
+
+class SequenceTracker:
+    """Counts messages missed according to Bitcoin Core's per-topic sequence numbers.
+
+    Every ZMQ message from bitcoind carries a little-endian uint32 sequence
+    number that increases by one per message on that topic. A jump means the
+    subscriber missed messages in between (for example the socket's buffer
+    overflowed). The first message has nothing to compare with, and a large
+    backwards jump is a node restart, so neither counts as missed.
     """
-    import zmq  # already importable if connect_subscriber succeeded
 
-    socket = connect_subscriber(endpoint)
-    poller = zmq.Poller()
-    poller.register(socket, zmq.POLLIN)
+    def __init__(self):
+        self.last: Optional[int] = None
+        self.missed = 0
+        self.restarts = 0
+
+    def record(self, sequence: int) -> int:
+        """Record one sequence number; return how many messages were missed before it."""
+        gap = 0
+        if self.last is not None:
+            expected = (self.last + 1) % 2**32
+            gap = (sequence - expected) % 2**32
+            if gap > SEQUENCE_RESET_GAP:
+                self.restarts += 1
+                gap = 0
+            self.missed += gap
+        self.last = sequence
+        return gap
+
+
+class ZMQListener:
+    """A persistent subscriber to bitcoind's `hashtx` topic on a background thread.
+
+    start() opens one SUB socket and keeps it open; the thread puts every
+    announced txid into a bounded in-memory queue. drain() hands queued txids
+    to a monitor cycle. Because the socket never closes between cycles,
+    transactions announced while the monitor is sleeping are kept, not lost.
+
+    The socket is created, used and closed only on the listener thread, as
+    pyzmq sockets are not thread-safe.
+    """
+
+    def __init__(self, endpoint: str, queue_size: int = DEFAULT_QUEUE_SIZE):
+        self.endpoint = endpoint
+        self._queue: deque = deque()
+        self._queue_size = queue_size
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._ready = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._sequence = SequenceTracker()
+        self.received = 0
+        self.overflow = 0
+        self.unresolved = 0  # txids the node could not return details for (updated by fetch)
+        self.error: Optional[str] = None
+
+    @property
+    def running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def start(self, timeout: float = 5.0) -> "ZMQListener":
+        """Start the listener thread (idempotent). Raises ZMQFeedError if it cannot connect."""
+        if self.running:
+            return self
+        self._stop.clear()
+        self._ready.clear()
+        self.error = None
+        self._thread = threading.Thread(target=self._run, name="batman-zmq-listener", daemon=True)
+        self._thread.start()
+        self._ready.wait(timeout)
+        if self.error:
+            raise ZMQFeedError(self.error)
+        return self
+
+    def stop(self, timeout: float = 5.0) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout)
+
+    def _run(self) -> None:
+        try:
+            socket = connect_subscriber(self.endpoint)
+        except ZMQFeedError as error:
+            self.error = str(error)
+            self._ready.set()
+            return
+        import zmq
+
+        poller = zmq.Poller()
+        poller.register(socket, zmq.POLLIN)
+        self._ready.set()
+        try:
+            while not self._stop.is_set():
+                if not dict(poller.poll(POLL_MS)):
+                    continue
+                parts = socket.recv_multipart()
+                self._handle(parts)
+        except Exception as error:  # zmq.ZMQError or a malformed message
+            self.error = f"ZMQ listener stopped: {error}"
+        finally:
+            poller.unregister(socket)
+            socket.close(linger=0)
+
+    def _handle(self, parts: List[bytes]) -> None:
+        """Queue one [topic, txid, sequence] message from bitcoind."""
+        if len(parts) < 2 or parts[0] != b"hashtx":
+            return
+        with self._lock:
+            self.received += 1
+            if len(parts) >= 3 and len(parts[2]) == 4:
+                self._sequence.record(struct.unpack("<I", parts[2])[0])
+            if len(self._queue) >= self._queue_size:
+                self._queue.popleft()
+                self.overflow += 1
+            self._queue.append(parts[1].hex())
+
+    def drain(self, max_items: Optional[int] = None) -> List[str]:
+        """Remove and return up to `max_items` queued txids, oldest first (all if None)."""
+        with self._lock:
+            count = len(self._queue) if max_items is None else min(max_items, len(self._queue))
+            return [self._queue.popleft() for _ in range(count)]
+
+    def stats(self) -> Dict[str, Any]:
+        """Counters for the feed's health: received, queued, missed, overflow, unresolved, restarts."""
+        with self._lock:
+            return {
+                "running": self.running,
+                "received": self.received,
+                "queued": len(self._queue),
+                "missed": self._sequence.missed,
+                "overflow": self.overflow,
+                "unresolved": self.unresolved,
+                "node_restarts": self._sequence.restarts,
+                "error": self.error,
+            }
+
+
+_LISTENERS: Dict[str, ZMQListener] = {}
+_LISTENERS_LOCK = threading.Lock()
+
+
+def get_listener(endpoint: str) -> ZMQListener:
+    """The one running listener for `endpoint`, started on first use.
+
+    Shared by the CLI loop and the Streamlit page, so a page rerun reuses the
+    same connection instead of opening (and missing messages on) a new one.
+    """
+    with _LISTENERS_LOCK:
+        listener = _LISTENERS.get(endpoint)
+        if listener is None:
+            listener = ZMQListener(endpoint)
+            _LISTENERS[endpoint] = listener
+    if listener.error or not listener.running:
+        listener.start()
+    return listener
+
+
+def fetch_from_listener(rpc: BitcoinRPC, listener: ZMQListener,
+                        max_tx: Optional[int] = None) -> pd.DataFrame:
+    """Resolve the txids queued since the last cycle into BATMAN schema rows.
+
+    Takes up to `max_tx` queued txids (all of them if None); the rest stay
+    queued for the next cycle. A transaction the node can no longer resolve
+    (already mined and pruned, or evicted) is skipped and counted.
+    Raises ZMQFeedError if the listener thread has stopped.
+    """
+    if listener.error:
+        raise ZMQFeedError(listener.error)
     fetched_at = datetime.now(tz=timezone.utc)
     rows: List[Dict[str, Any]] = []
-    try:
-        while len(rows) < max_tx:
-            if not dict(poller.poll(timeout_ms)):
-                break  # no new transaction within the window
-            _topic, body, _seq = socket.recv_multipart()
-            txid = body.hex()
-            try:
-                tx = rpc.get_transaction_verbose(txid)
-            except NodeRPCError:
-                continue
-            row = core_tx_to_row(tx, fetched_at)
-            if row is not None:
-                rows.append(row)
-    finally:
-        poller.unregister(socket)
-        socket.close(linger=0)
+    for txid in listener.drain(max_tx):
+        try:
+            tx = rpc.get_transaction_verbose(txid)
+        except NodeRPCError:
+            listener.unresolved += 1
+            continue
+        row = core_tx_to_row(tx, fetched_at)
+        if row is not None:
+            rows.append(row)
     return pd.DataFrame(rows)
 
 
 if __name__ == "__main__":
     import sys
+    import time
 
     from src.config import get_node_settings
 
-    count = int(sys.argv[1]) if len(sys.argv) > 1 else 10
+    seconds = float(sys.argv[1]) if len(sys.argv) > 1 else 15
     settings = get_node_settings()
     rpc = BitcoinRPC(url=settings["rpc_url"], user=settings["rpc_user"],
                      password=settings["rpc_password"], cookie_path=settings["rpc_cookie"])
     print(f"Pinging node at {settings['rpc_url']} ...")
     rpc.ping()
-    print(f"Connected. Waiting for {count} live transactions on {settings['zmq_endpoint']} ...")
-    frame = fetch_zmq_transactions(rpc, settings["zmq_endpoint"], max_tx=count)
-    print(f"Captured {len(frame)} transactions.")
+    print(f"Connected. Listening on {settings['zmq_endpoint']} for {seconds:.0f}s ...")
+    listener = get_listener(settings["zmq_endpoint"])
+    time.sleep(seconds)
+    frame = fetch_from_listener(rpc, listener)
+    print(f"Captured {len(frame)} transactions. Feed stats: {listener.stats()}")
     if not frame.empty:
         with pd.option_context("display.max_colwidth", 20, "display.width", 160):
             print(frame[["txid", "timestamp", "input_addresses", "output_addresses", "fee"]].head(10))

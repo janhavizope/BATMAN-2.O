@@ -20,7 +20,7 @@ import streamlit as st
 from src.config import LIVE_DB
 from src.core.backend.live.live_risk import SIGNALS
 from src.core.backend.live.live_store import LiveStore
-from src.core.backend.live.monitor import FEED_ERRORS, build_zmq_fetch, run_cycle
+from src.core.backend.live.monitor import FEED_ERRORS, build_zmq_fetch, format_feed_stats, run_cycle
 from src.core.backend.live.watchlist import load_watchlist
 from src.web_frontend.components import render_header, render_metric_card
 
@@ -94,7 +94,7 @@ def render_live_monitor() -> None:
         "Pulls recent transactions from the live Bitcoin mempool and analyses each one for "
         "structural risk patterns. Flags are explainable indicators (mixer signatures, "
         "consolidation sweeps, peeling chains, dust, watchlist hits), not a verdict of illicit activity. "
-        "Nothing but the public API is contacted; analysis stays on this machine."
+        "Only the chosen feed is contacted (the public API, or your own node); analysis stays on this machine."
     )
 
     store = _store()
@@ -103,8 +103,12 @@ def render_live_monitor() -> None:
     with c0:
         source = st.radio("Feed source", ["Public API", "My node (ZMQ)"], horizontal=False,
                           help="Public API: mempool.space. My node: your own Bitcoin Core over ZMQ.")
+    node_feed = source == "My node (ZMQ)"
     with c1:
-        max_tx = st.number_input("Transactions per cycle", min_value=5, max_value=100, value=25, step=5)
+        max_tx = st.number_input(
+            "Transactions per cycle", min_value=5, max_value=100, value=25, step=5, disabled=node_feed,
+            help="Public API only. The node feed processes every transaction queued since the last cycle.",
+        )
     with c2:
         auto = st.toggle("Auto-refresh", value=False, help="Run a cycle automatically on a timer.")
     with c3:
@@ -112,8 +116,9 @@ def render_live_monitor() -> None:
 
     if st.button("Fetch & analyse now", type="primary") or auto:
         fetch_fn = None
-        if source == "My node (ZMQ)":
+        if node_feed:
             try:
+                # Reuses the one persistent listener, so reruns don't drop the subscription
                 fetch_fn = build_zmq_fetch()
             except FEED_ERRORS as error:
                 st.error(f"Could not connect to your node: {error}. Falling back to the public API "
@@ -121,7 +126,8 @@ def render_live_monitor() -> None:
                 st.stop()
         with st.spinner("Fetching live transactions and running forensic analysis ..."):
             try:
-                result = run_cycle(store, max_tx=int(max_tx), watchlist=watchlist, fetch_fn=fetch_fn)
+                result = run_cycle(store, max_tx=None if node_feed else int(max_tx),
+                                   watchlist=watchlist, fetch_fn=fetch_fn)
             except FEED_ERRORS as error:
                 st.error(f"Could not reach the live feed: {error}")
                 result = None
@@ -133,6 +139,10 @@ def render_live_monitor() -> None:
                     f"Cycle complete — fetched {result.fetched} transactions, {result.valid} valid, "
                     f"{result.wallets} wallets, {result.flagged_tx} flagged (HIGH/CRITICAL)."
                 )
+            health = format_feed_stats(result.feed_stats)
+            if health:
+                st.caption(health[0].upper() + health[1:] + ". Missed = gaps in the node's message "
+                           "sequence; unresolved = transactions the node no longer had.")
 
     summary = store.summary()
     if summary["total_transactions"] == 0:
