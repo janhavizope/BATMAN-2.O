@@ -433,6 +433,7 @@ with st.sidebar:
 
     nav_options = [
         "> Overview",
+        "> Live Monitor",
         "> Transaction Analysis",
         "> Network Graph",
         "> Entity Investigation",
@@ -465,6 +466,10 @@ clean_page = selected_nav.replace("> ", "").strip()
 if clean_page == "Overview":
     from src.web_frontend.overview import render_overview
     render_overview()
+
+elif clean_page == "Live Monitor":
+    from src.web_frontend.live_monitor import render_live_monitor
+    render_live_monitor()
 
 elif clean_page == "Transaction Analysis":
     from src.web_frontend.transaction_analysis import render_transaction_analysis

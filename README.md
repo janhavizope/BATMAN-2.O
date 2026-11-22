@@ -11,6 +11,7 @@ Built for **Smart India Hackathon 2026**, problem **SIH26146** (AI/Blockchain & 
 | Component | State | Notes |
 |---|---|---|
 | **Streamlit web app** (`app.py`) | ✅ Works after cloning | Reads the precomputed Elliptic++ risk scores committed in `data/elliptic_plus/` (Git LFS). |
+| **Live monitor** (`src/core/backend/live/`) | ✅ Live, explainable | Pulls current Bitcoin transactions from the mempool.space API and runs a forensic analysis (explainable structural signals) on each one. Indicators, not a verdict — see [Live monitoring](#live-monitoring-online). |
 | **Supervised models** (`scripts/train_*.py`) | ✅ Reproducible | Random Forests on Elliptic and Elliptic++, trained with a temporal split and no time-revealing features. See [Results](#results-temporal-split). |
 | **Unsupervised pipeline** (`src/core/backend/`) | ⚠️ Experimental | Isolation Forest + HDBSCAN with no label-derived weights. Runs on synthetic data, on Elliptic++, and on files uploaded in the web app. |
 | **Desktop app** (`main.py`, PySide6) | ✅ Works after cloning | Uses the same data layer (`src/data/`) as the web app. |
@@ -148,6 +149,98 @@ Mean illicit F1 per time step:
 - **The threshold is chosen on a validation period, not the test set.** The models train on steps 1–29, the alert threshold is picked on the held-out validation period (steps 30–34), and precision/recall are reported on the test period (steps 35–49), which is never used for tuning. Holding 30–34 out of training costs some headline performance (for example wallet illicit F1 0.29 → 0.24 and ROC-AUC 0.86 → 0.77 versus training on 1–34), but the reported numbers are now honest for a model that has not seen the data it is measured on.
 
 ---
+
+## Live monitoring (online)
+
+Everything above scores a **static, historical** dataset (Elliptic/Elliptic++, real
+Bitcoin from 2016). The live monitor scores the **current** network instead.
+
+```bash
+# web: open the app and use the "Live Monitor" page (Fetch & analyse / Auto-refresh)
+streamlit run app.py
+
+# headless, public API feed (no setup):
+py -m src.core.backend.live.monitor --interval 30 --max-tx 40
+
+# headless, your own full node (firsthand, no rate limit — see node setup below):
+py -m src.core.backend.live.monitor --source zmq --interval 30
+```
+
+### Two feeds
+
+| Feed | Setup | Throughput | Use |
+|---|---|---|---|
+| **Public API** (default) | none | ~10 tx/cycle, rate limited | demos, trying it out |
+| **Your node (ZMQ)** | run Bitcoin Core | every transaction, firsthand, instant | real monitoring |
+
+**Node setup (ZMQ feed).** The node is a **pruned** Bitcoin Core node — it joins the
+real network and relays every transaction (so the live feed is complete), but keeps only
+~20 GB of recent blocks instead of the ~600 GB a full archival node needs, so it fits on
+a normal drive. [`docs/bitcoin.conf.sample`](docs/bitcoin.conf.sample) is a ready config
+that stores everything on `D:\BitcoinData` and enables RPC + ZMQ. Steps:
+
+1. Install [Bitcoin Core](https://bitcoincore.org/en/download/) and `pip install pyzmq`.
+2. Copy the sample to `D:\BitcoinData\bitcoin.conf`, then start the node:
+   `bitcoind -datadir=D:\BitcoinData -conf=D:\BitcoinData\bitcoin.conf`. The first sync
+   takes hours to a few days (it verifies the chain, then keeps only the pruned window).
+3. Point BATMAN at the node's cookie (written in the datadir):
+   `set BATMAN_RPC_COOKIE=D:\BitcoinData\.cookie` (and `BATMAN_ZMQ_ENDPOINT` /
+   `BATMAN_RPC_URL` if you changed the ports). Defaults match the sample config.
+4. Run `--source zmq`, or pick **My node (ZMQ)** on the Live Monitor page.
+
+[`zmq_feed.py`](src/core/backend/live/zmq_feed.py) subscribes to the node's `hashtx`
+topic and resolves each transaction's full detail through the local RPC
+([`node_rpc.py`](src/core/backend/live/node_rpc.py), `getrawtransaction` verbosity 2,
+which returns each input's previous output). It talks only to your node — nothing leaves
+the machine. pyzmq is the only added dependency, and only this feed needs it.
+
+One cycle, in [`src/core/backend/live/`](src/core/backend/live/):
+
+1. **Fetch** — [`mempool_feed.py`](src/core/backend/live/mempool_feed.py) pulls recent
+   transactions from the public mempool.space / Esplora API (standard library only,
+   no new dependency) and maps each one to the BATMAN schema: inputs' previous
+   outputs give the sending addresses and amounts, satoshis become BTC, and
+   coinbase / OP\_RETURN entries without an address are skipped.
+2. **Validate** — the same [`validator.py`](src/core/backend/validation/validator.py)
+   the Upload & Score page uses.
+3. **Analyse** — [`live_risk.py`](src/core/backend/live/live_risk.py) scores each
+   transaction on structural forensic signals and explains every point. Wallet risk
+   is the highest risk of any transaction the address took part in.
+4. **Store** — [`live_store.py`](src/core/backend/live/live_store.py) keeps a rolling
+   SQLite store (`data/live/live_monitor.sqlite`, git-ignored) of the scored
+   transactions and per-wallet latest/peak risk, and prunes itself to stay bounded.
+
+### The forensic signals
+
+Each is computable from one transaction, needs no training, and is reported only when it
+raised the score (one `SIGNALS` table drives both the score and the reasons, like the
+batch `risk_engine`):
+
+| Signal | Pattern it catches |
+|---|---|
+| `watchlist_hit` | an address on your known-bad list (`data/live/watchlist.json`) — decisive, forces CRITICAL |
+| `equal_outputs` | many outputs of identical value — CoinJoin / mixer signature |
+| `high_fan_out` | funds split across many outputs — distribution / peeling / payout batching |
+| `high_fan_in` | many inputs consolidated — sweep / collection |
+| `peeling_chain` | two outputs, one a tiny remainder — a layering step |
+| `dust_outputs` | outputs below the dust limit — spam / address tainting |
+| `high_value` / `round_value` | large or suspiciously round totals |
+| `self_churn` | an input address reused as an output amid several outputs |
+
+**What it is, and isn't.** These are **indicators of patterns associated with illicit use,
+not proof**. A mixer, an exchange batch payout, and a consolidation sweep are all
+legitimate most of the time; the engine surfaces them for a human to triage and explains
+why. It deliberately leaves ordinary payments LOW — most live traffic is ordinary.
+
+This replaces the near-random *unsupervised* score (ROC-AUC ~0.54 on real labels) as the
+live signal. The strong supervised transaction model (ROC-AUC 0.93) still **cannot** run
+live — it needs Elliptic's 166 engineered graph-aggregate features, which are not
+reproducible from a raw live transaction — so the forensic engine is the honest,
+explainable live analysis until a supervised model is retrained on live-computable
+features. The public API is rate limited, so `/mempool/recent` returns about 10
+transactions per cycle regardless of `--max-tx`; run a full node's ZMQ feed for higher
+throughput. The watchlist is empty by default — populate `data/live/watchlist.json`
+(a JSON array of addresses, or `{"address", "reason"}` objects) from a source you trust.
 
 ## Unsupervised pipeline (experimental)
 
@@ -330,6 +423,49 @@ These come from a review of the changes above.
 - [x] **Show performance drift in the app.** The Overview page now shows the transaction model's illicit F1 per test time step (green where it works, red where F1 < 0.5), with a caption that detection collapses after the step-43 dark-market shutdown and the models need retraining when illicit behaviour changes (`get_model_drift()` in `elliptic_source.py`).
 - [ ] **Remove the old parquet copies from git history** (`git lfs migrate import`). **Not done — deliberately deferred.** This rewrites every commit SHA and needs a force-push, which breaks every teammate's clone (everyone must re-clone) and cannot be undone, so it must be agreed as a team first and run as a separate announced step after this work is merged.
 - [ ] **Rebuild the Linux AppImage** from the current code.
+
+---
+
+## Recent progress — live monitoring & the ZMQ node (November 2026)
+
+A running log of the live-monitoring work added in this phase. Everything above
+still stands; this section only records what is new and what is in progress.
+
+### Done
+
+- **Live monitoring is built and working on the public API feed.** The app now has a
+  **Live Monitor** page (and a headless CLI) that pulls *current* Bitcoin transactions
+  from the mempool.space / Esplora public API, validates them, scores each one with the
+  forensic engine, and stores them in a rolling SQLite feed — real live traffic, no
+  setup, no cost. This is fully demo-ready on its own.
+- **Explainable forensic scoring instead of the near-random unsupervised score.**
+  [`live_risk.py`](src/core/backend/live/live_risk.py) scores each transaction on
+  structural signals (mixer-style equal outputs, fan-in sweeps, fan-out payouts,
+  peeling chains, dust, round/high value, watchlist hits) and explains every point.
+  Verified on live data: it flagged a real 1→54 equal-output mixer (HIGH) and a
+  62-input consolidation (MEDIUM) while leaving ordinary payments LOW.
+- **The full live backend** under [`src/core/backend/live/`](src/core/backend/live/):
+  feed (`mempool_feed.py`), scoring (`live_risk.py`), rolling store (`live_store.py`),
+  watchlist (`watchlist.py`), node RPC (`node_rpc.py`), ZMQ feed (`zmq_feed.py`), and the
+  cycle/loop runner (`monitor.py`). Covered by tests in
+  [`tests/test_live.py`](tests/test_live.py) and
+  [`tests/test_live_zmq.py`](tests/test_live_zmq.py).
+
+### In progress — adding the ZMQ node feed
+
+- **We are adding the second feed: a local Bitcoin Core node over ZMQ**, for the complete
+  firehose instead of the rate-limited API sample (see [Two feeds](#two-feeds)). The code
+  is already in place (`zmq_feed.py` + `node_rpc.py`); what remains is the one-time node
+  sync.
+- **The node is a pruned Bitcoin Core node** (keeps ~20 GB, not the full ~600 GB), stored
+  on `D:\BitcoinData`, with RPC + ZMQ enabled. BATMAN reads its `.cookie` automatically
+  (`src/config.py` auto-detects `D:\BitcoinData\.cookie`).
+- **Initial sync is running.** Check progress any time with `py scripts/node_status.py`.
+  The sync downloads and verifies the chain once (hours to a couple of days on a laptop);
+  it does not block anything — the Live Monitor works on the public API feed meanwhile.
+- **When sync finishes** (`node_status.py` shows `READY`), switch to the node feed with
+  `py -m src.core.backend.live.monitor --source zmq`, or pick **My node (ZMQ)** on the
+  Live Monitor page. One flag — no other change.
 
 ---
 
