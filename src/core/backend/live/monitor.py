@@ -45,6 +45,12 @@ except ImportError:  # pragma: no cover
     pass
 
 
+API_DEFAULT_MAX_TX = 40
+# With the ZMQ feed a cycle processes everything queued since the last one, up
+# to this many transactions (one local RPC call each); the rest wait a cycle.
+ZMQ_MAX_PER_CYCLE = 5_000
+
+
 @dataclass
 class CycleResult:
     fetched: int
@@ -52,6 +58,23 @@ class CycleResult:
     wallets: int
     flagged_tx: int = 0
     error: Optional[str] = None
+    # ZMQ feed health after the cycle (received / queued / missed / ...), else None
+    feed_stats: Optional[dict] = None
+
+
+class ZMQFetch:
+    """A cycle fetch function backed by the shared persistent ZMQ listener."""
+
+    def __init__(self, rpc, listener):
+        self.rpc = rpc
+        self.listener = listener
+
+    def __call__(self, max_tx: Optional[int]) -> pd.DataFrame:
+        from src.core.backend.live.zmq_feed import fetch_from_listener
+        return fetch_from_listener(self.rpc, self.listener, max_tx or ZMQ_MAX_PER_CYCLE)
+
+    def stats(self) -> dict:
+        return self.listener.stats()
 
 
 def _validate_frame(frame: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
@@ -60,80 +83,107 @@ def _validate_frame(frame: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     return TransactionValidator().validate(frame)
 
 
-def run_cycle(store: LiveStore, max_tx: int = 40, watchlist=None,
-              fetch_fn: Optional[Callable[[int], pd.DataFrame]] = None) -> CycleResult:
+def run_cycle(store: LiveStore, max_tx: Optional[int] = API_DEFAULT_MAX_TX, watchlist=None,
+              fetch_fn: Optional[Callable[[Optional[int]], pd.DataFrame]] = None) -> CycleResult:
     """Run one fetch -> validate -> forensic analysis -> store cycle.
 
     `fetch_fn(max_tx)` returns the transactions to score; it defaults to the
     public mempool API. Pass the node ZMQ feed (see build_zmq_fetch) to monitor
-    firsthand. Feed errors are caught and returned on the result rather than
+    firsthand; with it, max_tx=None processes everything queued since the last
+    cycle. Feed errors are caught and returned on the result rather than
     raised, so a long-running loop survives a transient outage.
     """
     if watchlist is None:
         watchlist, _ = load_watchlist()
     if fetch_fn is None:
-        fetch_fn = lambda n: fetch_live_transactions(max_tx=n)
+        fetch_fn = lambda n: fetch_live_transactions(max_tx=n or API_DEFAULT_MAX_TX)
+    stats_fn = getattr(fetch_fn, "stats", None)
+
+    def result(**fields) -> CycleResult:
+        return CycleResult(feed_stats=stats_fn() if stats_fn else None, **fields)
 
     try:
         transactions = fetch_fn(max_tx)
     except FEED_ERRORS as error:
-        return CycleResult(fetched=0, valid=0, wallets=0, error=str(error))
+        return result(fetched=0, valid=0, wallets=0, error=str(error))
 
     fetched = len(transactions)
     if transactions.empty:
-        return CycleResult(fetched=0, valid=0, wallets=0)
+        return result(fetched=0, valid=0, wallets=0)
 
     clean, report = _validate_frame(transactions)
     if clean.empty:
-        return CycleResult(fetched=fetched, valid=0, wallets=0)
+        return result(fetched=fetched, valid=0, wallets=0)
 
     tx_risk, wallet_risk = analyze_frame(clean, watchlist=watchlist)
     store.record_cycle(tx_risk, wallet_risk, tx_fetched=fetched, tx_valid=report["valid_records"])
     store.prune()
     flagged = int(tx_risk["risk_level"].isin(["HIGH", "CRITICAL"]).sum()) if not tx_risk.empty else 0
-    return CycleResult(fetched=fetched, valid=report["valid_records"],
-                       wallets=len(wallet_risk), flagged_tx=flagged)
+    return result(fetched=fetched, valid=report["valid_records"],
+                  wallets=len(wallet_risk), flagged_tx=flagged)
 
 
-def build_zmq_fetch() -> Callable[[int], pd.DataFrame]:
+def build_zmq_fetch() -> ZMQFetch:
     """Build a fetch function backed by your Bitcoin Core node's ZMQ feed.
 
     Reads node settings from the environment (see src.config.get_node_settings),
-    verifies the node answers, and returns a `fetch(max_tx)` the cycle can use.
-    Raises a feed error if pyzmq or the node is unavailable.
+    verifies the node answers, and attaches to the shared persistent listener
+    for the configured endpoint (started on first use, then reused, so the
+    subscription stays open between cycles and page reruns). Raises a feed
+    error if pyzmq or the node is unavailable.
     """
     from src.core.backend.live.node_rpc import BitcoinRPC
-    from src.core.backend.live.zmq_feed import fetch_zmq_transactions
+    from src.core.backend.live.zmq_feed import get_listener
 
     settings = get_node_settings()
     rpc = BitcoinRPC(url=settings["rpc_url"], user=settings["rpc_user"],
                      password=settings["rpc_password"], cookie_path=settings["rpc_cookie"])
     rpc.ping()  # fail fast with a clear error if the node is not reachable
-    endpoint = settings["zmq_endpoint"]
-    return lambda n: fetch_zmq_transactions(rpc, endpoint, max_tx=n)
+    return ZMQFetch(rpc, get_listener(settings["zmq_endpoint"]))
 
 
-def run_loop(interval: float = 30.0, max_tx: int = 40, db_path=LIVE_DB,
+def format_feed_stats(stats: Optional[dict]) -> str:
+    """One line describing ZMQ feed health, or '' for the API feed."""
+    if not stats:
+        return ""
+    text = (f"node feed: {stats['received']:,} announced, {stats['queued']:,} queued, "
+            f"{stats['missed']:,} missed, {stats['unresolved']:,} unresolved")
+    if stats["overflow"]:
+        text += f", {stats['overflow']:,} dropped (queue full)"
+    return text
+
+
+def run_loop(interval: float = 30.0, max_tx: Optional[int] = None, db_path=LIVE_DB,
              max_cycles: Optional[int] = None, source: str = "api") -> None:
-    """Run cycles forever (or `max_cycles` times), pausing `interval` seconds."""
+    """Run cycles forever (or `max_cycles` times), pausing `interval` seconds.
+
+    max_tx=None means the feed's default: 40 for the API, and everything
+    queued (up to ZMQ_MAX_PER_CYCLE) for the node feed.
+    """
     store = LiveStore(db_path)
     fetch_fn = None
     if source == "zmq":
         print("Connecting to your Bitcoin node (ZMQ) ...")
         fetch_fn = build_zmq_fetch()
-        print("Node reachable.")
+        print("Node reachable; listening for transactions continuously.")
+        batch = f"all queued (up to {max_tx or ZMQ_MAX_PER_CYCLE:,})"
+    else:
+        max_tx = max_tx or API_DEFAULT_MAX_TX
+        batch = f"up to {max_tx}"
     print(f"BATMAN live monitor ({source}) -> {db_path}")
-    print(f"Fetching up to {max_tx} transactions every {interval:.0f}s. Ctrl-C to stop.\n")
+    print(f"Processing {batch} transactions every {interval:.0f}s. Ctrl-C to stop.\n")
     cycle = 0
     while max_cycles is None or cycle < max_cycles:
         cycle += 1
         result = run_cycle(store, max_tx=max_tx, fetch_fn=fetch_fn)
         stamp = time.strftime("%H:%M:%S")
+        health = format_feed_stats(result.feed_stats)
+        health = f" | {health}" if health else ""
         if result.error:
-            print(f"[{stamp}] cycle {cycle}: feed error — {result.error}")
+            print(f"[{stamp}] cycle {cycle}: feed error — {result.error}{health}")
         else:
             print(f"[{stamp}] cycle {cycle}: fetched {result.fetched}, valid {result.valid}, "
-                  f"wallets {result.wallets}, flagged tx {result.flagged_tx}")
+                  f"wallets {result.wallets}, flagged tx {result.flagged_tx}{health}")
         if max_cycles is not None and cycle >= max_cycles:
             break
         try:
@@ -146,7 +196,9 @@ def run_loop(interval: float = 30.0, max_tx: int = 40, db_path=LIVE_DB,
 def main() -> None:
     parser = argparse.ArgumentParser(description="BATMAN live Bitcoin monitor")
     parser.add_argument("--interval", type=float, default=30.0, help="seconds between cycles")
-    parser.add_argument("--max-tx", type=int, default=40, help="transactions to fetch per cycle")
+    parser.add_argument("--max-tx", type=int, default=None,
+                        help=f"transactions per cycle (default: {API_DEFAULT_MAX_TX} for api; "
+                             f"everything queued, up to {ZMQ_MAX_PER_CYCLE:,}, for zmq)")
     parser.add_argument("--cycles", type=int, default=None, help="stop after this many cycles")
     parser.add_argument("--db", default=str(LIVE_DB), help="path to the SQLite store")
     parser.add_argument("--source", choices=["api", "zmq"], default="api",

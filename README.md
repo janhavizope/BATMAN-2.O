@@ -163,6 +163,7 @@ streamlit run app.py
 py -m src.core.backend.live.monitor --interval 30 --max-tx 40
 
 # headless, your own full node (firsthand, no rate limit — see node setup below):
+# each cycle processes everything the node announced since the last cycle
 py -m src.core.backend.live.monitor --source zmq --interval 30
 ```
 
@@ -170,8 +171,8 @@ py -m src.core.backend.live.monitor --source zmq --interval 30
 
 | Feed | Setup | Throughput | Use |
 |---|---|---|---|
-| **Public API** (default) | none | ~10 tx/cycle, rate limited | demos, trying it out |
-| **Your node (ZMQ)** | run Bitcoin Core | every transaction, firsthand, instant | real monitoring |
+| **Public API** (default) | none | ~10 tx/cycle, rate limited (a small sample of traffic) | demos, trying it out |
+| **Your node (ZMQ)** | run Bitcoin Core 25.0+ | every transaction, firsthand, instant | real monitoring |
 
 **Node setup (ZMQ feed).** The node is a **pruned** Bitcoin Core node — it joins the
 real network and relays every transaction (so the live feed is complete), but keeps only
@@ -179,10 +180,15 @@ real network and relays every transaction (so the live feed is complete), but ke
 a normal drive. [`docs/bitcoin.conf.sample`](docs/bitcoin.conf.sample) is a ready config
 that stores everything on `D:\BitcoinData` and enables RPC + ZMQ. Steps:
 
-1. Install [Bitcoin Core](https://bitcoincore.org/en/download/) and `pip install pyzmq`.
+1. Install [Bitcoin Core](https://bitcoincore.org/en/download/) **25.0 or newer**
+   (the feed uses `getrawtransaction` verbosity 2) and `pip install pyzmq`.
 2. Copy the sample to `D:\BitcoinData\bitcoin.conf`, then start the node:
    `bitcoind -datadir=D:\BitcoinData -conf=D:\BitcoinData\bitcoin.conf`. The first sync
-   takes hours to a few days (it verifies the chain, then keeps only the pruned window).
+   takes hours to a few days. That is an estimate, not a fixed requirement: even a pruned
+   node downloads and verifies the whole chain once, then deletes old blocks. Pruning
+   saves disk, not sync time. Sync time depends mostly on the disk (SSD vs hard drive),
+   then RAM, CPU and bandwidth. Keep the datadir on an SSD and raise `dbcache` (the
+   sample sets 4000 MB) to shorten it. Check progress with `py scripts/node_status.py`.
 3. Point BATMAN at the node's cookie (written in the datadir):
    `set BATMAN_RPC_COOKIE=D:\BitcoinData\.cookie` (and `BATMAN_ZMQ_ENDPOINT` /
    `BATMAN_RPC_URL` if you changed the ports). Defaults match the sample config.
@@ -193,6 +199,25 @@ topic and resolves each transaction's full detail through the local RPC
 ([`node_rpc.py`](src/core/backend/live/node_rpc.py), `getrawtransaction` verbosity 2,
 which returns each input's previous output). It talks only to your node — nothing leaves
 the machine. pyzmq is the only added dependency, and only this feed needs it.
+
+**The subscription stays open between cycles.** ZMQ is publish/subscribe: bitcoind does
+not keep messages for a subscriber that is not connected. So `ZMQListener` holds one
+connection open on a background thread and queues every announced transaction id, and
+each cycle processes the whole queue (up to `ZMQ_MAX_PER_CYCLE` = 5,000; the rest wait a
+cycle). Transactions announced while the monitor sleeps are kept. The CLI and the Live
+Monitor page share the same listener, so page reruns don't reconnect. Each cycle reports
+the feed's health:
+
+- **announced:** transactions the node sent us.
+- **queued:** waiting for the next cycle.
+- **missed:** gaps in bitcoind's per-message sequence numbers, i.e. messages that never
+  arrived. It should stay at 0.
+- **unresolved:** announced transactions the node could no longer return. They were already
+  mined and pruned, or evicted.
+
+(Before this fix, each cycle opened a new connection, read up to 40 transactions, and
+closed it. Everything announced during the 30-second pause was lost, so the "full
+firehose" was really a sample of about 40 per cycle.)
 
 One cycle, in [`src/core/backend/live/`](src/core/backend/live/):
 
@@ -450,6 +475,13 @@ still stands; this section only records what is new and what is in progress.
   cycle/loop runner (`monitor.py`). Covered by tests in
   [`tests/test_live.py`](tests/test_live.py) and
   [`tests/test_live_zmq.py`](tests/test_live_zmq.py).
+- **ZMQ feed fixed so it really is complete.** It used to open a new subscription on every
+  cycle, read up to 40 transactions, then close it. Everything the node announced during
+  the pause between cycles was lost. A persistent background listener now keeps the
+  subscription open and queues every transaction; each cycle processes the whole queue.
+  It also counts gaps in bitcoind's sequence numbers, so lost messages are reported
+  instead of disappearing silently. See [Two feeds](#two-feeds). It is tested end to end
+  against a real local ZMQ publisher.
 
 ### In progress — adding the ZMQ node feed
 
@@ -460,7 +492,8 @@ still stands; this section only records what is new and what is in progress.
 - **The node is a pruned Bitcoin Core node** (keeps ~20 GB, not the full ~600 GB), stored
   on `D:\BitcoinData`, with RPC + ZMQ enabled. BATMAN reads its `.cookie` automatically
   (`src/config.py` auto-detects `D:\BitcoinData\.cookie`).
-- **Initial sync is running.** Check progress any time with `py scripts/node_status.py`.
+- **Initial sync is running** on the teammate machine that hosts the node (no node is
+  installed on every machine). Check progress any time with `py scripts/node_status.py`.
   The sync downloads and verifies the chain once (hours to a couple of days on a laptop);
   it does not block anything — the Live Monitor works on the public API feed meanwhile.
 - **When sync finishes** (`node_status.py` shows `READY`), switch to the node feed with
