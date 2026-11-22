@@ -28,6 +28,7 @@ import pandas as pd
 # mempool.space hosts an Esplora-compatible API. Blockstream's
 # https://blockstream.info/api is a drop-in alternative base URL.
 DEFAULT_BASE_URL = "https://mempool.space/api"
+FALLBACK_BASE_URL = "https://blockstream.info/api"
 SATS_PER_BTC = 100_000_000
 USER_AGENT = "BATMAN-2.0 live monitor (research)"
 
@@ -121,7 +122,14 @@ def fetch_live_transactions(max_tx: int = 40, base_url: str = DEFAULT_BASE_URL,
     Raises MempoolFeedError if the feed is unreachable. An individual
     transaction that fails to fetch is skipped, not fatal.
     """
-    txids = _recent_txids(base_url, max_tx)
+    try:
+        txids = _recent_txids(base_url, max_tx)
+    except MempoolFeedError as error:
+        if base_url == DEFAULT_BASE_URL:
+            base_url = FALLBACK_BASE_URL
+            txids = _recent_txids(base_url, max_tx)
+        else:
+            raise
     fetched_at = datetime.now(tz=timezone.utc)
     rows: List[Dict[str, Any]] = []
     for txid in txids:

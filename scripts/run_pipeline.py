@@ -43,6 +43,7 @@ SUPERVISED_STEPS = [
     ["scripts/train_elliptic_plus.py"],
     ["scripts/score_transactions.py"],
     ["scripts/score_wallets.py"],
+    ["scripts/derive_wallet_risk_from_tx.py"],
 ]
 
 UNSUPERVISED_STEPS = [

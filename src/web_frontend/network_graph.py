@@ -87,7 +87,7 @@ def render_network_graph() -> None:
                     y=[point["score"] for point in timeline],
                     mode='lines+markers',
                     name=team_name,
-                    line=dict(color=line_colors[idx % len(line_colors)], width=2),
+                    line=dict(color=line_colors[idx % len(line_colors)], width=2, shape='hv'),
                     marker=dict(size=6),
                 ))
         else:

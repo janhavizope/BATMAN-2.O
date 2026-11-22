@@ -70,6 +70,11 @@ def render_explainability() -> None:
     with scol2:
         render_metric_card("RISK SCORE", f"{expl['risk_score']}/100")
 
+    st.caption(
+        "Risk score is derived from the highest-risk transaction the wallet took part in (via the Elliptic++ "
+        "transaction model). The feature contributions below show behavioral factors identified by the Random Forest wallet model."
+    )
+
     st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
 
     # --- Feature Contributions Bar Chart -------------------------------------

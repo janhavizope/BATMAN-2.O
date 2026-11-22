@@ -202,7 +202,7 @@ def evaluate(model, X_test, y_test, test_steps):
         output_dict=True, zero_division=0,
     )
     metrics = {
-        "split": f"temporal: train steps 1-{TRAIN_LAST_STEP}, test steps {TRAIN_LAST_STEP + 1}+",
+        "split": f"temporal: train steps 1-{TRAIN_LAST_STEP}, val {TRAIN_LAST_STEP + 1}-{VAL_LAST_STEP}, test steps {VAL_LAST_STEP + 1}+",
         "test_rows": len(X_test),
         "accuracy": accuracy_score(y_test, y_pred),
         "roc_auc": roc_auc_score(y_test, y_prob) if y_test.nunique() == 2 else None,
@@ -235,7 +235,8 @@ def main():
 
     X_train, X_test, y_train, y_test = temporal_split(X, y, time_steps)
     print(f"Train: {len(X_train)} rows (steps 1-{TRAIN_LAST_STEP})  |  "
-          f"Test: {len(X_test)} rows (steps {TRAIN_LAST_STEP + 1}+)\n")
+          f"Validation: steps {TRAIN_LAST_STEP + 1}-{VAL_LAST_STEP}  |  "
+          f"Test: {len(X_test)} rows ({TEST_LABEL})\n")
 
     print("Training Random Forest ...")
     model = RandomForestClassifier(

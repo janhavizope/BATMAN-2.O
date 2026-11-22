@@ -93,6 +93,7 @@ def tx_derived_risk():
     sent = pd.read_csv(ADDRTX_FILE).rename(columns={"input_address": "address"})
     received = pd.read_csv(TXADDR_FILE).rename(columns={"output_address": "address"})
     links = pd.concat([sent[["address", "txId"]], received[["address", "txId"]]], ignore_index=True)
+    links = links.drop_duplicates(["address", "txId"])
     links["risk"] = links["txId"].map(tx)
     grouped = links.dropna(subset=["risk"]).groupby("address")["risk"]
     # max = flags a wallet exposed to any near-certain illicit transaction;
@@ -140,8 +141,9 @@ def main():
     )
     display_cols = top_features + [c for c in INFO_COLUMNS if c not in top_features]
 
-    # One row per wallet (its features are constant across its time steps)
-    best = df.sort_values("risk", ascending=False).drop_duplicates("address")
+    # One row per wallet (its features are constant across its time steps;
+    # keep the latest Time step to reflect the wallet's most recent activity)
+    best = df.sort_values(["risk", "Time step"], ascending=[False, False]).drop_duplicates("address")
     out = best[["address", "Time step", "class", "risk", "rf_risk", "tx_mean", "split"] + display_cols].rename(
         columns={"Time step": "time_step"}
     )

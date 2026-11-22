@@ -193,6 +193,7 @@ def test_entities_and_explanations(scores):
     explained = elliptic_source.get_explainability_data()
     # Feature names are prettified for display (same as the Alerts page)
     assert explained["wallet02"]["top_features"][0]["feature"] == "total txs"
+    assert "human_reason" in explained["wallet02"]
 
 
 def test_graph_data(scores):

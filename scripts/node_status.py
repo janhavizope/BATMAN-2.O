@@ -21,9 +21,9 @@ from src.core.backend.live.node_rpc import BitcoinRPC, NodeRPCError
 
 def main() -> int:
     settings = get_node_settings()
-    rpc = BitcoinRPC(url=settings["rpc_url"], user=settings["rpc_user"],
-                     password=settings["rpc_password"], cookie_path=settings["rpc_cookie"])
     try:
+        rpc = BitcoinRPC(url=settings["rpc_url"], user=settings["rpc_user"],
+                         password=settings["rpc_password"], cookie_path=settings["rpc_cookie"])
         info = rpc.call("getblockchaininfo")
     except NodeRPCError as error:
         print("Node not reachable:", error)

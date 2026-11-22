@@ -101,6 +101,7 @@ def workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(score_wallets, "SCORES_FILE", data / "wallet_scores.parquet")
     monkeypatch.setattr(score_wallets, "TIMELINE_FILE", data / "wallet_timeline.parquet")
     monkeypatch.setattr(score_wallets, "EXPLANATIONS_FILE", data / "wallet_explanations.parquet")
+    monkeypatch.setattr(score_wallets, "WALLET_TX_FILE", data / "wallet_tx_edges.parquet")
     monkeypatch.setattr(score_transactions, "DATA_DIR", data)
     monkeypatch.setattr(score_transactions, "MODEL_FILE", models / "elliptic_plus_txs_rf_model.joblib")
     monkeypatch.setattr(score_transactions, "SCORES_FILE", data / "tx_scores.parquet")
@@ -180,6 +181,39 @@ def test_train_and_score_transactions(workspace):
     assert (labelled.loc[labelled["split"] == "test", "time_step"] > VAL_LAST_STEP).all()
     assert (scores.loc[scores["class"] == "unknown", "split"] == "unknown").all()
     assert scores["risk"].between(0, 1).all()
+
+
+def test_score_wallets_with_transaction_links(workspace):
+    train_elliptic_plus.train("txs", train_elliptic_plus.load_txs)
+    score_transactions.main()
+    train_elliptic_plus.train("wallets", train_elliptic_plus.load_wallets)
+
+    data = workspace / "elliptic_plus"
+    txs = pd.read_parquet(data / "tx_scores.parquet")
+    tx_ids = txs["txId"].head(4).tolist()
+
+    # addr0 is in tx0 and tx1; in tx0 it is both sender and receiver (tests deduplication)
+    pd.DataFrame({
+        "input_address": ["addr0", "addr0", "addr1"],
+        "txId": [tx_ids[0], tx_ids[1], tx_ids[2]],
+    }).to_csv(data / "AddrTx_edgelist.csv", index=False)
+    pd.DataFrame({
+        "output_address": ["addr0", "addr1"],
+        "txId": [tx_ids[0], tx_ids[3]],
+    }).to_csv(data / "TxAddr_edgelist.csv", index=False)
+
+    score_wallets.main()
+
+    scores = pd.read_parquet(data / "wallet_scores.parquet")
+    assert "risk" in scores.columns
+    assert "tx_mean" in scores.columns
+    assert "rf_risk" in scores.columns
+    addr0_score = scores[scores["address"] == "addr0"].iloc[0]
+    expected_tx_risks = txs.set_index("txId").loc[[tx_ids[0], tx_ids[1]], "risk"]
+    assert addr0_score["risk"] == pytest.approx(expected_tx_risks.max())
+    assert addr0_score["tx_mean"] == pytest.approx(expected_tx_risks.mean())
+    assert (data / "wallet_timeline.parquet").exists()
+    assert (data / "wallet_tx_edges.parquet").exists()
 
 
 def test_tree_contributions_reconstruct_the_prediction():
