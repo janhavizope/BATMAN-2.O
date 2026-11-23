@@ -446,7 +446,7 @@ These come from a review of the changes above.
 **P2 — operations**
 
 - [x] **Show performance drift in the app.** The Overview page now shows the transaction model's illicit F1 per test time step (green where it works, red where F1 < 0.5), with a caption that detection collapses after the step-43 dark-market shutdown and the models need retraining when illicit behaviour changes (`get_model_drift()` in `elliptic_source.py`).
-- [ ] **Remove the old parquet copies from git history** (`git lfs migrate import`). **Not done — deliberately deferred.** This rewrites every commit SHA and needs a force-push, which breaks every teammate's clone (everyone must re-clone) and cannot be undone, so it must be agreed as a team first and run as a separate announced step after this work is merged.
+- [ ] **Remove the old parquet copies from git history** (`git lfs migrate import`). **Prepared and dry-run tested; see [`docs/HISTORY_CLEANUP.md`](docs/HISTORY_CLEANUP.md).** On a throwaway clone, removing the old parquets *and* the long-deleted synthetic datasets and models shrank the history a clone downloads from 107 MB to 4.8 MB, with `main`'s files unchanged. **Not run: deliberately deferred.** This rewrites every commit SHA and needs a force-push, which breaks every teammate's clone (everyone must re-clone) and cannot be undone, so it must be agreed as a team first and run as a separate announced step after this work is merged.
 - [ ] **Rebuild the Linux AppImage** from the current code.
 
 ---
