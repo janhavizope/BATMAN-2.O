@@ -5,8 +5,7 @@
 # rolling window of block history — about 20 GB here, not the ~600 GB a full
 # archival node needs. That is all the live monitor requires.
 #
-# 1. Install Bitcoin Core 25.0 or newer: https://bitcoincore.org/en/download/
-#    (BATMAN uses getrawtransaction verbosity 2, added in 25.0)
+# 1. Install Bitcoin Core (BATMAN is tested on 32.1): https://bitcoincore.org/en/download/
 # 2. Save this file as bitcoin.conf inside the datadir below (create the folder).
 # 3. Start the node:  bitcoind -datadir=D:\BitcoinData -conf=D:\BitcoinData\bitcoin.conf
 #    The first sync ("initial block download") downloads and verifies the chain

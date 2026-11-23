@@ -172,7 +172,7 @@ py -m src.core.backend.live.monitor --source zmq --interval 30
 | Feed | Setup | Throughput | Use |
 |---|---|---|---|
 | **Public API** (default) | none | ~10 tx/cycle, rate limited (a small sample of traffic) | demos, trying it out |
-| **Your node (ZMQ)** | run Bitcoin Core 25.0+ | every transaction, firsthand, instant | real monitoring |
+| **Your node (ZMQ)** | run Bitcoin Core (tested on 32.1) | every transaction, firsthand, instant | real monitoring |
 
 **Node setup (ZMQ feed).** The node is a **pruned** Bitcoin Core node — it joins the
 real network and relays every transaction (so the live feed is complete), but keeps only
@@ -180,8 +180,8 @@ real network and relays every transaction (so the live feed is complete), but ke
 a normal drive. [`docs/bitcoin.conf.sample`](docs/bitcoin.conf.sample) is a ready config
 that stores everything on `D:\BitcoinData` and enables RPC + ZMQ. Steps:
 
-1. Install [Bitcoin Core](https://bitcoincore.org/en/download/) **25.0 or newer**
-   (the feed uses `getrawtransaction` verbosity 2) and `pip install pyzmq`.
+1. Install [Bitcoin Core](https://bitcoincore.org/en/download/) (tested on 32.1) and
+   `pip install pyzmq`.
 2. Copy the sample to `D:\BitcoinData\bitcoin.conf`, then start the node:
    `bitcoind -datadir=D:\BitcoinData -conf=D:\BitcoinData\bitcoin.conf`. The first sync
    takes hours to a few days. That is an estimate, not a fixed requirement: even a pruned
@@ -196,9 +196,28 @@ that stores everything on `D:\BitcoinData` and enables RPC + ZMQ. Steps:
 
 [`zmq_feed.py`](src/core/backend/live/zmq_feed.py) subscribes to the node's `hashtx`
 topic and resolves each transaction's full detail through the local RPC
-([`node_rpc.py`](src/core/backend/live/node_rpc.py), `getrawtransaction` verbosity 2,
-which returns each input's previous output). It talks only to your node — nothing leaves
-the machine. pyzmq is the only added dependency, and only this feed needs it.
+([`node_rpc.py`](src/core/backend/live/node_rpc.py)). It talks only to your node, and
+nothing leaves the machine. pyzmq is the only added dependency, and only this feed
+needs it.
+
+**Resolving the senders.** Bitcoin Core's `getrawtransaction` verbosity 2 adds each
+input's previous output (`prevout`) and the `fee` only from block data. A transaction
+still in the mempool, which is every transaction the live feed sees, comes back without
+them. Without `prevout` there are no sending addresses. So `resolve_transactions` in
+[`zmq_feed.py`](src/core/backend/live/zmq_feed.py) looks them up itself, in JSON-RPC
+batches (a few HTTP requests per cycle, not one per input):
+
+- **`gettxout`** for each input. The coin being spent is still unspent on-chain while the
+  spending transaction is only in the mempool, so this works on a pruned node without
+  `txindex`.
+- **`getrawtransaction` on the parent** when the parent is itself unconfirmed.
+- **`getmempoolentry`** for the fee.
+- **The latest 6 blocks** (`getrawtransaction` with the block hash) for a transaction
+  mined before its cycle ran. A pruned node keeps recent blocks, and inside a block Core
+  does include prevouts and the fee.
+
+bitcoind also announces every transaction a second time when it is mined. The listener
+remembers recent transaction ids and skips those repeats.
 
 **The subscription stays open between cycles.** ZMQ is publish/subscribe: bitcoind does
 not keep messages for a subscriber that is not connected. So `ZMQListener` holds one
@@ -212,8 +231,10 @@ the feed's health:
 - **queued:** waiting for the next cycle.
 - **missed:** gaps in bitcoind's per-message sequence numbers, i.e. messages that never
   arrived. It should stay at 0.
-- **unresolved:** announced transactions the node could no longer return. They were already
-  mined and pruned, or evicted.
+- **unresolved:** announced transactions the node could no longer return. They were
+  evicted, or mined more than 6 blocks before their cycle ran.
+- **repeats skipped:** re-announcements of transactions already queued (bitcoind sends
+  each one again when it is mined).
 
 (Before this fix, each cycle opened a new connection, read up to 40 transactions, and
 closed it. Everything announced during the 30-second pause was lost, so the "full
@@ -363,8 +384,14 @@ The suite covers:
 - **Shared data layer** (`tests/test_data_source.py`): threshold choice, position-based severity (that every band is filled despite a large tie at the top), Git LFS pointer detection, hidden training rows, alerts, entities, wallet-transaction links, the network graph, and the desktop DataManager on top of it.
 - **Training and scoring scripts** (`tests/test_training_scripts.py`): the temporal and wallet splits, dropped time features, and a full train → score run on small synthetic Elliptic++ fixtures.
 - **Desktop GUI:** pages and state.
+- **Live monitoring** (`tests/test_live.py`, `tests/test_live_zmq.py`): the API feed, forensic scoring, the store, and the ZMQ feed. The ZMQ tests use a fake node that answers the way Bitcoin Core does (no `prevout` for mempool transactions), plus a real local ZMQ publisher.
+- **Real Bitcoin Core node, optional** (`tests/test_live_bitcoind.py`): starts a throwaway **regtest** bitcoind (a private chain, ready in seconds, no sync), sends real transactions, and checks the ZMQ feed end to end. It covers transactions sent between cycles, transactions mined before their cycle, repeat announcements, and a child of an unconfirmed parent. It is skipped unless you point it at a `bitcoind` binary:
+  ```bash
+  set BATMAN_TEST_BITCOIND=C:\path\to\bitcoin-32.1\bin\bitcoind.exe
+  pytest tests/test_live_bitcoind.py -v
+  ```
 
-CI runs the same suite on GitHub Actions. It caches the Git LFS score files between runs, so each run doesn't re-download about 55 MB from the repository's LFS quota.
+CI runs the same suite on GitHub Actions (without the optional real-node test). It caches the Git LFS score files between runs, so each run doesn't re-download about 55 MB from the repository's LFS quota.
 
 ### Manual check — Upload & Score
 
@@ -482,6 +509,15 @@ still stands; this section only records what is new and what is in progress.
   It also counts gaps in bitcoind's sequence numbers, so lost messages are reported
   instead of disappearing silently. See [Two feeds](#two-feeds). It is tested end to end
   against a real local ZMQ publisher.
+- **ZMQ feed checked against a real Bitcoin Core node (32.1, regtest).** That check found
+  that the feed produced **no transactions at all** on a real node. Core gives no
+  `prevout` for mempool transactions, so no sender could be found, and every transaction
+  was dropped. The earlier tests had used hand-made data that included `prevout`. The
+  feed now resolves inputs itself (`gettxout`, mempool parents, the fee from
+  `getmempoolentry`), finds transactions mined before their cycle ran, and skips
+  bitcoind's repeat announcements. On the real node: 50 transactions sent between cycles
+  gave 50 processed and 0 missed; 5 mined before their cycle were all found; 56 repeats
+  were skipped. This now runs as `tests/test_live_bitcoind.py`.
 
 ### In progress — adding the ZMQ node feed
 

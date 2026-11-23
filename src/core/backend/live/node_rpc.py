@@ -5,8 +5,8 @@ standard library is used: HTTP POST with basic auth, reading the node's
 `.cookie` file when no user/password is configured.
 
 This is how the ZMQ feed turns a transaction id into full details
-(getrawtransaction with verbosity 2 returns each input's previous output,
-so we get the sending addresses and amounts). It talks only to the local
+(getrawtransaction, plus gettxout for each input's previous output so we get
+the sending addresses and amounts; batch() sends many calls in one request). It talks only to the local
 node — nothing leaves the machine.
 
 Connection settings come from the environment, with sensible localhost
@@ -23,7 +23,7 @@ import json
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, List, Optional, Tuple
 
 
 class NodeRPCError(RuntimeError):
@@ -51,16 +51,15 @@ class BitcoinRPC:
             raise NodeRPCError("no RPC credentials: set a cookie path or user/password")
         return "Basic " + base64.b64encode(token.encode("utf-8")).decode("ascii")
 
-    def call(self, method: str, params: Optional[list] = None) -> Any:
-        payload = json.dumps({"jsonrpc": "1.0", "id": "batman", "method": method,
-                              "params": params or []}).encode("utf-8")
+    def _post(self, payload: Any, label: str) -> Any:
+        """POST one JSON-RPC payload (a request or a batch list) and return the parsed body."""
         request = urllib.request.Request(
-            self.url, data=payload,
+            self.url, data=json.dumps(payload).encode("utf-8"),
             headers={"Authorization": self._auth, "Content-Type": "application/json"},
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                body = json.loads(response.read().decode("utf-8"))
+                return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
             # bitcoind returns the RPC error as the body even on HTTP 500.
             detail = ""
@@ -68,16 +67,55 @@ class BitcoinRPC:
                 detail = json.loads(error.read().decode("utf-8")).get("error", {}).get("message", "")
             except Exception:
                 pass
-            raise NodeRPCError(f"{method}: HTTP {error.code} {detail}".strip()) from error
+            raise NodeRPCError(f"{label}: HTTP {error.code} {detail}".strip()) from error
         except (urllib.error.URLError, TimeoutError, OSError) as error:
             raise NodeRPCError(f"could not reach the node at {self.url}: {error}") from error
+
+    def call(self, method: str, params: Optional[list] = None) -> Any:
+        body = self._post({"jsonrpc": "1.0", "id": "batman", "method": method,
+                           "params": params or []}, method)
         if body.get("error"):
             raise NodeRPCError(f"{method}: {body['error']}")
         return body["result"]
 
+    def batch(self, calls: List[Tuple[str, list]]) -> List[Any]:
+        """Send several calls in one HTTP request (JSON-RPC batch).
+
+        Returns one entry per call, in order: the call's result, or a
+        NodeRPCError instance if that call failed. Raises NodeRPCError only if
+        the node cannot be reached at all.
+        """
+        if not calls:
+            return []
+        payload = [{"jsonrpc": "1.0", "id": i, "method": method, "params": params}
+                   for i, (method, params) in enumerate(calls)]
+        body = self._post(payload, f"batch of {len(calls)}")
+        if not isinstance(body, list):
+            raise NodeRPCError(f"batch of {len(calls)}: unexpected response")
+        by_id = {item.get("id"): item for item in body if isinstance(item, dict)}
+        results: List[Any] = []
+        for i, (method, _params) in enumerate(calls):
+            item = by_id.get(i)
+            if item is None:
+                results.append(NodeRPCError(f"{method}: no response in batch"))
+            elif item.get("error"):
+                results.append(NodeRPCError(f"{method}: {item['error']}"))
+            else:
+                results.append(item.get("result"))
+        return results
+
     def get_transaction_verbose(self, txid: str) -> dict:
-        """getrawtransaction with verbosity 2: includes each input's prevout."""
-        return self.call("getrawtransaction", [txid, 2])
+        """One transaction with every input's prevout and the fee filled in.
+
+        See zmq_feed.resolve_transactions: getrawtransaction verbosity 2 does
+        not include prevouts or the fee for mempool transactions, so they are
+        looked up separately.
+        """
+        from src.core.backend.live.zmq_feed import resolve_transactions
+        resolved, _missing = resolve_transactions(self, [txid])
+        if not resolved:
+            raise NodeRPCError(f"getrawtransaction: transaction {txid} not found")
+        return resolved[0]
 
     def ping(self) -> bool:
         """True if the node answers. Raises NodeRPCError if it cannot be reached."""

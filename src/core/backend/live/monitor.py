@@ -148,6 +148,8 @@ def format_feed_stats(stats: Optional[dict]) -> str:
         return ""
     text = (f"node feed: {stats['received']:,} announced, {stats['queued']:,} queued, "
             f"{stats['missed']:,} missed, {stats['unresolved']:,} unresolved")
+    if stats.get("duplicates"):
+        text += f", {stats['duplicates']:,} repeats skipped (re-announced when mined)"
     if stats["overflow"]:
         text += f", {stats['overflow']:,} dropped (queue full)"
     return text
