@@ -42,6 +42,7 @@ Open http://127.0.0.1:8501. No dataset download is needed. The app uses the scor
 | Page | What it shows |
 |---|---|
 | **Overview** | Wallet and transaction totals, flagged transactions per Elliptic time step, severity breakdown, top alerts |
+| **Live Monitor** | Current Bitcoin transactions from the public API or your own node, scored by explainable forensic signals; risk distribution, patterns detected, flagged transactions, riskiest wallets |
 | **Transaction Analysis** | Held-out and unlabelled transactions with risk %, true label, and linked transactions |
 | **Network Graph** | The top 10 alerted wallets, the transactions they sent or received, and the transaction flows between those; centrality table; wallet risk over time |
 | **Entity Investigation** | Profile of a flagged wallet: activity timeline, its transactions, key attributes, evidence |
@@ -65,6 +66,95 @@ The wallet risk the app shows is **derived from the transaction model** — a wa
 Required columns: `txid`, `timestamp`, `input_addresses`, `output_addresses`, `input_amounts`, `output_amounts`. List fields use `|` or JSON arrays. `fee` and the network fields (`src_ip`, `dst_ip`, `src_port`, `dst_port`, `asn`, `geo_country`) are optional, because real on-chain data has no network fields. The page offers a template CSV. Uploads are validated with [`validator.py`](src/core/backend/validation/validator.py) and scored in memory with [`pipeline.py`](src/core/backend/pipeline.py). Scores are relative to the uploaded file, and nothing leaves the machine.
 
 The page shows a warning at the top. On real labelled Elliptic++ wallets this unsupervised score reached ROC-AUC 0.54, close to random guessing (see [Unsupervised pipeline](#unsupervised-pipeline-experimental)). Its HIGH and CRITICAL levels mean "unusual compared with the rest of the file", not "illicit".
+
+---
+
+## Demo guide
+
+How to present BATMAN in about 12 minutes: the story, how the parts fit, a checklist, a page-by-page script, the limitations to state up front, and answers to likely questions. The figures here were checked against the repository on 23 November 2026.
+
+### The story in one minute
+
+- **The problem.** Bitcoin is pseudonymous. Ransom, scam and darknet money moves through it, and an investigator faces hundreds of thousands of transactions with no way to know which few matter.
+- **What BATMAN does.** It learns from *real* labelled Bitcoin data (Elliptic++) which transactions look illicit, and turns that into a short, ranked alert list of wallets. For each wallet it shows *why*: which features raised the score, and how they compare with typical licit and illicit wallets. It also watches today's network live, flagging mixer, sweep and peeling-chain patterns as they appear.
+- **Why it can be trusted.** The models are tested the way they would be used: trained on the past, tuned on a separate period, and scored on a later period they never saw. The results are reported honestly, including where the model fails.
+
+| Headline figure | Value |
+|---|---|
+| Real Bitcoin transactions (Elliptic++) | 203,769 |
+| Wallets scored | 822,942 |
+| Wallets known to be illicit | 14,266 |
+| Wallets on the alert list | 936 (94 Critical · 281 High · 561 Medium) |
+| Transaction model ROC-AUC on unseen time periods | 0.93 |
+| Precision of alerts on the test period | 100% (every alerted test wallet was truly illicit) |
+
+### How it fits together
+
+Three paths feed the same investigator interface:
+
+| Path | Flow |
+|---|---|
+| **1. Historical intelligence** (the core) | Elliptic++ dataset → Random Forest models (train steps 1–29, threshold on 30–34, test on 35–49) → precomputed scores in `data/elliptic_plus/` → shared data layer (`src/data/`) → web app (`app.py`) and desktop app (`main.py`, Linux AppImage) |
+| **2. Live monitoring** | Public API (mempool.space, Blockstream fallback) or your own Bitcoin node over ZMQ → validation → forensic signals (mixer, fan-in, fan-out, peeling chain, dust, round/high value, watchlist) → local SQLite store → **Live Monitor** page |
+| **3. Your own data** | CSV/JSON upload → validation report → unsupervised scoring (Isolation Forest + HDBSCAN) → **Upload & Score** page, wallets ranked with reasons, downloadable |
+
+### Before you start
+
+1. **Get the real score files:** `git lfs install && git lfs pull`. Without them the app shows a "Git LFS pointers" warning instead of data.
+2. **Start the web app:** `streamlit run app.py`, then open http://127.0.0.1:8501 before presenting. The first load reads about 140 MB of scores into memory and takes a few seconds.
+3. **Test the Live Monitor on the demo network.** It needs internet. Click **Fetch & analyse now** a few times before the audience arrives, so the page already has data. If mempool.space is blocked, BATMAN falls back to Blockstream automatically.
+4. **Have an upload file ready.** On **Upload & Score**, use **Download a template CSV**, or prepare a larger CSV in that format.
+5. **Know one wallet to search for.** The top alert, `12cFuZto3vpfk1wiB3bfFT88DnfSiqPoYb`, is a good example for Entity Investigation and Wallet Scanner.
+6. **Optional:** the desktop app (`python main.py`, or the AppImage on Linux) shows the same data in a native window.
+
+### Walkthrough
+
+| # | Page | Time | Show | Say | Point out |
+|---|---|---|---|---|---|
+| 1 | **Overview** | 1.5 min | KPI cards, flagged activity over time, severity donut, model-drift chart | "Out of about 823,000 wallets, BATMAN hands the investigator 936 to look at, ranked into 94 Critical, 281 High and 561 Medium." | The drift chart: the model works until step 42 and fails after the step-43 dark-market shutdown. Saying this first builds trust. |
+| 2 | **Alerts** | 1 min | Filter by Critical, search an entity, open the alert detail | "This is the investigator's queue. Every alert carries its main reason, so nobody has to trust a bare number." | The list is sized to a review budget: the threshold rises until the queue is a workable length. |
+| 3 | **Entity Investigation** | 2 min | The top wallet: risk, timeline, its transactions, attributes, evidence | "A wallet's risk comes from the transactions it touched. This one is Critical because nearly all of its transactions score as near-certain illicit." | Training-set wallets are never shown as predictions. |
+| 4 | **Explainability** | 1.5 min | Feature-contribution chart, "this wallet vs typical licit vs typical illicit" | "For every score we can say exactly which features raised it and by how much." | Contributions are an exact decomposition of the Random Forest score (Saabas method): they add up to the prediction. |
+| 5 | **Network Graph** | 1.5 min | Top 10 alerted wallets, their transactions and money flows, centrality table, risk over time | "Illicit money moves in networks. Here you can see which alerted wallets are linked through shared transactions." | **Download .csv** for a case file. |
+| 6 | **Transaction Analysis** and **Wallet Scanner** | 1 min | A high-risk transaction with its true label; the threshold slider; lookup by address | "The analyst controls the trade-off: lower the threshold to see more, raise it to see only the surest cases." | Test-set rows show the true label next to the prediction. |
+| 7 | **Live Monitor** | 2 min | **Fetch & analyse now** or Auto-refresh; risk distribution, patterns detected, flagged transactions | "This is today's Bitcoin network, analysed as it happens." | The public API gives a sample of about 10 transactions per cycle. **My node (ZMQ)** sees every transaction with no rate limit. |
+| 8 | **Upload & Score** | 1 min | Upload the prepared CSV: quality report, ranked wallets, download | "An agency can bring its own transaction records. BATMAN validates and ranks them, with nothing leaving the machine." | The on-page warning: this label-free score is for triage, not evidence. |
+| 9 | **Desktop app** (optional) | 0.5 min | The same data in the PySide6 app or AppImage | "For air-gapped investigation rooms, the whole platform runs offline as one desktop application." | |
+
+The numbers behind the demo are in [Results (temporal split)](#results-temporal-split) and [Alert threshold](#alert-threshold).
+
+| Alert queue | Threshold | Flagged | Test precision | Test recall |
+|---|---|---|---|---|
+| Wallets | 1.00 | 936 | 100% | 0.5% |
+| Transactions | 0.993 | 1,022 | 100% | 2.9% |
+
+Low recall is a deliberate choice, not a bug: the queue is cut to what an analyst can review, so it holds only the surest cases. Lowering the threshold on Wallet Scanner trades precision for recall.
+
+### Limitations to state up front
+
+- **Criminals change tactics.** Transaction-model F1 is about 0.87 for steps 35–42 and about 0.04 after the step-43 dark-market shutdown. The model needs retraining when illicit behaviour changes, and the Overview drift chart shows this.
+- **Live analysis is rule-based.** The strong model needs Elliptic's 166 precomputed graph features, which can't be rebuilt from a raw live transaction. The live page uses explainable forensic signals instead: indicators, not proof.
+- **Wallet features see a whole lifetime.** Elliptic++ wallet features summarise each wallet's entire history, which isn't known in real time. That's one reason wallet risk is derived from transaction risk.
+- **Historical data.** Elliptic++ covers Bitcoin from around 2016. The live monitor connects the platform to today's network.
+- **The public API is a sample.** About 10 transactions per cycle. Full coverage needs a Bitcoin Core node over ZMQ; that path is built and tested against a real (regtest) Bitcoin Core node.
+- **The unsupervised score is weak on real data.** ROC-AUC 0.54 on labelled Elliptic++ wallets, so Upload & Score is for triage only.
+
+### Questions you may be asked
+
+- **"Isn't high accuracy easy on imbalanced data?"** Yes, which is why we don't lead with accuracy. Only about 10% of labelled transactions are illicit, so we report precision, recall, F1 and ROC-AUC for the illicit class. An earlier version reported 98–99% accuracy using a random split; after switching to a time-based split, the honest numbers are the ones shown.
+- **"How do you know the model isn't cheating?"** It trains on steps 1–29, the threshold is chosen on 30–34, and every reported number comes from 35–49, which it never saw. Each wallet is in only one set, time-revealing features are removed, and training-set predictions are hidden in the app.
+- **"Why should an investigator trust a score?"** Every score comes with its reasons: the exact feature contributions behind it, and comparisons with typical licit and illicit wallets. Each live signal names the pattern it detected.
+- **"Why is recall so low on the alert list?"** The list is sized for a human team, so it holds the cases the model is most certain about. On the test period every one was truly illicit. The analyst can widen the net with the Wallet Scanner threshold.
+- **"Does it need the internet or the cloud?"** No. The dashboard, models, explanations, uploads and desktop app all run offline. Only the Live Monitor contacts the network: a public API, or your own Bitcoin node.
+- **"Why not run the best model on live data?"** It depends on features Elliptic computed with its own pipeline, which can't be recomputed from one live transaction. Retraining on live-computable features is the main next step.
+- **"What does the ZMQ option change?"** Instead of polling a rate-limited public website, BATMAN subscribes to a local Bitcoin Core node that announces every transaction. Nothing leaves the machine, and lost messages are counted. A pruned node needs about 20 GB of disk, and its first sync takes hours to days depending on the hardware.
+
+### If something goes wrong
+
+- **"Git LFS pointers" warning:** run `git lfs pull` and restart the app.
+- **Live Monitor shows a feed error:** the network is blocking the APIs. Skip that step, or use a phone hotspot.
+- **The web app won't start:** run the desktop app (`python main.py`), which uses the same data.
+- **Slow first load:** it reads about 140 MB of scores once. Open the app before presenting.
 
 ---
 
