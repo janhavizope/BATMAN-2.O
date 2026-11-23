@@ -4,18 +4,17 @@ A live transaction feed backed by your own Bitcoin Core full node, over ZMQ.
 
 bitcoind publishes every transaction it accepts on a ZMQ socket. We subscribe
 to the `hashtx` topic (each message is a new transaction's id), then ask the
-local node over RPC for the full transaction (getrawtransaction verbosity 2,
-which includes each input's previous output, so we get the sending addresses
-and amounts). Each transaction is mapped to the same BATMAN schema the
-mempool.space feed and the Upload & Score page use, so the rest of the
-pipeline — validation, forensic analysis, the store, the web page — is
-unchanged.
+local node over RPC for the full transaction and each input's previous output,
+which gives the sending addresses and amounts (resolve_transactions). Each
+transaction is mapped to the same BATMAN schema the mempool.space feed and
+the Upload & Score page use, so the rest of the pipeline — validation,
+forensic analysis, the store, the web page — is unchanged.
 
 This is the firsthand, real-time feed: no public API, no rate limit, every
 transaction the moment the node sees it. It needs a running node with ZMQ
-enabled (see the README's node setup) and Bitcoin Core 25.0 or newer
-(getrawtransaction verbosity 2). A pruned node is fine; its chainstate still
-resolves the prevouts of current mempool transactions.
+enabled (see the README's node setup); it is tested against Bitcoin Core 32.1.
+A pruned node without txindex is fine: the coins a mempool transaction spends
+are still in the node's chainstate, which gettxout reads.
 
 ZMQ is publish/subscribe: the node does not queue messages for a subscriber
 that is not connected. So the subscriber must stay connected the whole time.
@@ -63,7 +62,7 @@ def _address_of(script_pubkey: Dict[str, Any]) -> Optional[str]:
 
 
 def core_tx_to_row(tx: Dict[str, Any], fetched_at: datetime) -> Optional[Dict[str, Any]]:
-    """Map a Core getrawtransaction(verbosity=2) object to a BATMAN schema row.
+    """Map a Core transaction with prevouts filled in (see resolve_transactions) to a row.
 
     Amounts are already in BTC. Inputs/outputs without an address (coinbase
     inputs, OP_RETURN outputs, or a prevout the node could not resolve) are
@@ -92,11 +91,17 @@ def core_tx_to_row(tx: Dict[str, Any], fetched_at: datetime) -> Optional[Dict[st
     if not in_addresses or not out_addresses:
         return None
 
-    # getrawtransaction reports `fee` for mempool transactions; derive it
-    # otherwise from the resolved inputs and outputs when both are complete.
+    # resolve_transactions sets `fee` from getmempoolentry. Otherwise derive it
+    # from all inputs and outputs, but only when every input's prevout is known:
+    # with an input missing, the difference would understate the fee.
     fee = tx.get("fee")
     if fee is None:
-        fee = max(sum(in_amounts) - sum(out_amounts), 0.0)
+        spending = [vin for vin in tx.get("vin", []) if "coinbase" not in vin]
+        if spending and all(vin.get("prevout") for vin in spending):
+            fee = max(sum(float(vin["prevout"].get("value", 0.0)) for vin in spending)
+                      - sum(float(v.get("value", 0.0)) for v in tx.get("vout", [])), 0.0)
+        else:
+            fee = 0.0
 
     block_time = tx.get("blocktime")
     timestamp = (datetime.fromtimestamp(block_time, tz=timezone.utc)
@@ -136,6 +141,9 @@ def connect_subscriber(endpoint: str):
 # Most txids the listener holds between cycles. At a few transactions per
 # second this is hours of traffic; past it the oldest are dropped and counted.
 DEFAULT_QUEUE_SIZE = 200_000
+# How many recent txids are remembered to drop duplicate announcements
+# (several blocks' worth of mainnet transactions).
+DEFAULT_SEEN_SIZE = 500_000
 # A jump in the sequence number larger than this is a node restart (the
 # counter starts again from 0), not that many lost messages.
 SEQUENCE_RESET_GAP = 1_000_000
@@ -183,10 +191,16 @@ class ZMQListener:
     pyzmq sockets are not thread-safe.
     """
 
-    def __init__(self, endpoint: str, queue_size: int = DEFAULT_QUEUE_SIZE):
+    def __init__(self, endpoint: str, queue_size: int = DEFAULT_QUEUE_SIZE,
+                 seen_size: int = DEFAULT_SEEN_SIZE):
         self.endpoint = endpoint
         self._queue: deque = deque()
         self._queue_size = queue_size
+        # Recently queued txids, to skip the re-announcement when they are mined
+        self._seen: set = set()
+        self._seen_order: deque = deque()
+        self._seen_size = seen_size
+        self.duplicates = 0
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._ready = threading.Event()
@@ -248,14 +262,24 @@ class ZMQListener:
         """Queue one [topic, txid, sequence] message from bitcoind."""
         if len(parts) < 2 or parts[0] != b"hashtx":
             return
+        txid = parts[1].hex()
         with self._lock:
             self.received += 1
             if len(parts) >= 3 and len(parts[2]) == 4:
                 self._sequence.record(struct.unpack("<I", parts[2])[0])
+            # bitcoind announces a transaction again when it is mined into a
+            # block; one we already queued is not analysed twice.
+            if txid in self._seen:
+                self.duplicates += 1
+                return
+            self._seen.add(txid)
+            self._seen_order.append(txid)
+            if len(self._seen_order) > self._seen_size:
+                self._seen.discard(self._seen_order.popleft())
             if len(self._queue) >= self._queue_size:
                 self._queue.popleft()
                 self.overflow += 1
-            self._queue.append(parts[1].hex())
+            self._queue.append(txid)
 
     def drain(self, max_items: Optional[int] = None) -> List[str]:
         """Remove and return up to `max_items` queued txids, oldest first (all if None)."""
@@ -273,6 +297,7 @@ class ZMQListener:
                 "missed": self._sequence.missed,
                 "overflow": self.overflow,
                 "unresolved": self.unresolved,
+                "duplicates": self.duplicates,
                 "node_restarts": self._sequence.restarts,
                 "error": self.error,
             }
@@ -298,28 +323,131 @@ def get_listener(endpoint: str) -> ZMQListener:
     return listener
 
 
+# Transactions resolved per JSON-RPC batch (each batch is a few HTTP requests).
+RESOLVE_BATCH = 500
+# How many of the latest blocks to search for a transaction that was mined
+# before its cycle ran (6 blocks is about an hour on mainnet).
+RECENT_BLOCK_DEPTH = 6
+
+
+def _prevout_of(output: Dict[str, Any]) -> Dict[str, Any]:
+    return {"value": output.get("value", 0.0), "scriptPubKey": output.get("scriptPubKey") or {}}
+
+
+def _from_recent_blocks(rpc: BitcoinRPC, txids: List[str],
+                        depth: int = RECENT_BLOCK_DEPTH) -> List[Dict[str, Any]]:
+    """Find transactions mined into one of the last `depth` blocks.
+
+    Without txindex, getrawtransaction finds a confirmed transaction only when
+    told its block. A pruned node keeps recent blocks, and for a transaction
+    in a block verbosity 2 does include each input's prevout and the fee (from
+    the block's undo data). So a transaction mined between being announced
+    and being processed is still analysed.
+    """
+    remaining = list(txids)
+    found: List[Dict[str, Any]] = []
+    if not remaining:
+        return found
+    try:
+        block = rpc.call("getbestblockhash")
+    except NodeRPCError:
+        return found
+    for _ in range(depth):
+        if not remaining or not block:
+            break
+        results = rpc.batch([("getrawtransaction", [txid, 2, block]) for txid in remaining])
+        found += [tx for tx in results if isinstance(tx, dict)]
+        remaining = [txid for txid, tx in zip(remaining, results) if not isinstance(tx, dict)]
+        try:
+            block = rpc.call("getblockheader", [block]).get("previousblockhash")
+        except NodeRPCError:
+            break
+    return found
+
+
+def resolve_transactions(rpc: BitcoinRPC, txids: List[str]) -> tuple[List[Dict[str, Any]], int]:
+    """Fetch transactions with every input's previous output and the fee filled in.
+
+    Bitcoin Core's getrawtransaction verbosity 2 adds `prevout` and `fee` only
+    from block undo data, so for a transaction still in the mempool (every
+    transaction the live feed sees) it returns neither. Without the prevouts
+    there are no sending addresses, and the transaction cannot be analysed.
+    So this resolves them itself, in JSON-RPC batches:
+
+    1. getrawtransaction(txid, 1) for each announced transaction.
+    2. gettxout(parent, n, include_mempool=False) for each input: the coin it
+       spends is still unspent in the node's chainstate (the spend is only in
+       the mempool), so this works on a pruned node without txindex.
+    3. For inputs whose parent is itself unconfirmed, getrawtransaction on
+       the parent (in the mempool, so available without txindex).
+    4. getmempoolentry for the fee.
+
+    A transaction no longer in the mempool is looked up in the latest blocks
+    (_from_recent_blocks), where verbosity 2 does carry prevouts and the fee.
+
+    Returns (transactions, missing): `missing` counts txids the node no longer
+    had (evicted, or mined more than RECENT_BLOCK_DEPTH blocks ago). An input that still cannot be resolved
+    is left without a prevout and skipped by core_tx_to_row.
+    """
+    if not txids:
+        return [], 0
+    raws = rpc.batch([("getrawtransaction", [txid, 1]) for txid in txids])
+    txs = [tx for tx in raws if isinstance(tx, dict)]
+    not_in_mempool = [txid for txid, tx in zip(txids, raws) if not isinstance(tx, dict)]
+    # Mined since it was announced: look in the latest blocks (kept even when pruned)
+    txs += _from_recent_blocks(rpc, not_in_mempool)
+    missing = len(txids) - len(txs)
+
+    needs_prevout = [vin for tx in txs for vin in tx.get("vin", [])
+                     if "coinbase" not in vin and not vin.get("prevout") and "txid" in vin]
+    outputs = rpc.batch([("gettxout", [vin["txid"], vin["vout"], False]) for vin in needs_prevout])
+    unresolved_inputs = []
+    for vin, output in zip(needs_prevout, outputs):
+        if isinstance(output, dict):
+            vin["prevout"] = _prevout_of(output)
+        else:
+            unresolved_inputs.append(vin)
+
+    if unresolved_inputs:
+        parent_ids = sorted({vin["txid"] for vin in unresolved_inputs})
+        parents = dict(zip(parent_ids, rpc.batch([("getrawtransaction", [p, 1]) for p in parent_ids])))
+        for vin in unresolved_inputs:
+            parent = parents.get(vin["txid"])
+            if isinstance(parent, dict) and vin["vout"] < len(parent.get("vout", [])):
+                vin["prevout"] = _prevout_of(parent["vout"][vin["vout"]])
+
+    no_fee = [tx for tx in txs if tx.get("fee") is None]
+    entries = rpc.batch([("getmempoolentry", [tx["txid"]]) for tx in no_fee])
+    for tx, entry in zip(no_fee, entries):
+        if isinstance(entry, dict) and isinstance(entry.get("fees"), dict):
+            tx["fee"] = entry["fees"].get("base")
+    return txs, missing
+
+
 def fetch_from_listener(rpc: BitcoinRPC, listener: ZMQListener,
                         max_tx: Optional[int] = None) -> pd.DataFrame:
     """Resolve the txids queued since the last cycle into BATMAN schema rows.
 
     Takes up to `max_tx` queued txids (all of them if None); the rest stay
-    queued for the next cycle. A transaction the node can no longer resolve
-    (already mined and pruned, or evicted) is skipped and counted.
+    queued for the next cycle. A transaction the node no longer has (already
+    mined and pruned, or evicted) is skipped and counted as unresolved.
     Raises ZMQFeedError if the listener thread has stopped.
     """
     if listener.error:
         raise ZMQFeedError(listener.error)
     fetched_at = datetime.now(tz=timezone.utc)
+    txids = listener.drain(max_tx)
     rows: List[Dict[str, Any]] = []
-    for txid in listener.drain(max_tx):
+    for start in range(0, len(txids), RESOLVE_BATCH):
         try:
-            tx = rpc.get_transaction_verbose(txid)
-        except NodeRPCError:
-            listener.unresolved += 1
-            continue
-        row = core_tx_to_row(tx, fetched_at)
-        if row is not None:
-            rows.append(row)
+            txs, missing = resolve_transactions(rpc, txids[start:start + RESOLVE_BATCH])
+        except NodeRPCError as error:
+            raise ZMQFeedError(f"could not read transactions from the node: {error}") from error
+        listener.unresolved += missing
+        for tx in txs:
+            row = core_tx_to_row(tx, fetched_at)
+            if row is not None:
+                rows.append(row)
     return pd.DataFrame(rows)
 
 
