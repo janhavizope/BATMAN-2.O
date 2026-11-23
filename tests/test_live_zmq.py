@@ -110,7 +110,31 @@ def test_rpc_parses_result(monkeypatch):
         def read(self): return b'{"result": {"txid": "abc"}, "error": null}'
 
     monkeypatch.setattr(node_rpc.urllib.request, "urlopen", lambda *a, **k: FakeResponse())
-    assert rpc.get_transaction_verbose("abc") == {"txid": "abc"}
+    assert rpc.call("getrawtransaction", ["abc", 1]) == {"txid": "abc"}
+
+
+def test_rpc_batch_returns_results_and_errors_in_order(monkeypatch):
+    rpc = node_rpc.BitcoinRPC("http://127.0.0.1:8332", user="u", password="p")
+    sent = []
+
+    class FakeResponse:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        # bitcoind may answer a batch in any order; results are matched by id
+        def read(self):
+            return (b'[{"id": 1, "result": null, "error": {"code": -5, "message": "No such tx"}},'
+                    b' {"id": 0, "result": {"txid": "a"}, "error": null}]')
+
+    def urlopen(request, timeout):
+        sent.append(request.data)
+        return FakeResponse()
+
+    monkeypatch.setattr(node_rpc.urllib.request, "urlopen", urlopen)
+    first, second = rpc.batch([("getrawtransaction", ["a", 1]), ("getrawtransaction", ["b", 1])])
+    assert first == {"txid": "a"}
+    assert isinstance(second, node_rpc.NodeRPCError)
+    assert len(sent) == 1  # one HTTP request for the whole batch
+    assert rpc.batch([]) == []
 
 
 def test_rpc_surfaces_node_error(monkeypatch):
@@ -163,18 +187,130 @@ def test_listener_queue_order_overflow_and_topic_filter():
     assert listener.drain() == []
 
 
-class FakeRPC:
-    """Stands in for BitcoinRPC: knows some txids, raises for the rest."""
+class FakeNode:
+    """Stands in for BitcoinRPC, answering the way Bitcoin Core really does.
 
-    def __init__(self, known):
-        self.known = known
+    Mempool transactions come back from getrawtransaction WITHOUT `prevout`
+    or `fee` (Core only adds those from block undo data), so the feed must
+    resolve inputs itself: gettxout for confirmed parents, getrawtransaction
+    for parents still in the mempool, getmempoolentry for the fee. `mined`
+    transactions are no longer in the mempool and are only found by giving
+    getrawtransaction their block hash, which then includes prevouts and fee.
+    """
 
-    def get_transaction_verbose(self, txid):
-        if txid not in self.known:
-            raise node_rpc.NodeRPCError("No such mempool or blockchain transaction")
-        tx = core_tx()
-        tx["txid"] = txid
-        return tx
+    def __init__(self, mempool=(), mined=(), mempool_parents=()):
+        self.mempool = set(mempool)
+        self.mined = set(mined)
+        self.mempool_parents = set(mempool_parents)  # parents with no confirmed coin
+        self.http_requests = 0
+
+    @staticmethod
+    def _bare(txid, parent):
+        return {"txid": txid,
+                "vin": [{"txid": parent, "vout": 0}, {"txid": parent, "vout": 1}],
+                "vout": [{"value": 0.00148, "scriptPubKey": {"address": "bc1qreceiver"}},
+                         {"value": 0.0, "scriptPubKey": {"type": "nulldata"}}]}
+
+    def _one(self, method, params):
+        if method == "getrawtransaction":
+            txid = params[0]
+            if len(params) == 3:  # with a block hash
+                if txid in self.mined and params[2] == "tip":
+                    tx = core_tx()  # in a block: prevouts and fee included
+                    tx["txid"] = txid
+                    return tx
+                raise node_rpc.NodeRPCError("No such transaction found in the provided block")
+            if txid in self.mempool:
+                parent = "p-mempool" if txid in self.mempool_parents else "p-confirmed"
+                return self._bare(txid, parent)
+            if txid == "p-mempool":
+                return {"txid": txid, "vout": [
+                    {"value": 0.001, "scriptPubKey": {"address": "bc1qsender1"}},
+                    {"value": 0.0005, "scriptPubKey": {"address": "bc1qsender2"}}]}
+            raise node_rpc.NodeRPCError("No such mempool transaction")
+        if method == "gettxout":
+            parent, n, _include_mempool = params
+            if parent != "p-confirmed":
+                return None  # Core returns null for an unknown/unconfirmed coin
+            return [{"value": 0.001, "scriptPubKey": {"address": "bc1qsender1"}},
+                    {"value": 0.0005, "scriptPubKey": {"address": "bc1qsender2"}}][n]
+        if method == "getmempoolentry":
+            if params[0] in self.mempool:
+                return {"fees": {"base": 0.00002}}
+            raise node_rpc.NodeRPCError("Transaction not in mempool")
+        raise AssertionError(f"unexpected call {method}")
+
+    def batch(self, calls):
+        self.http_requests += 1
+        results = []
+        for method, params in calls:
+            try:
+                results.append(self._one(method, params))
+            except node_rpc.NodeRPCError as error:
+                results.append(error)
+        return results
+
+    def call(self, method, params=None):
+        self.http_requests += 1
+        if method == "getbestblockhash":
+            return "tip"
+        if method == "getblockheader":
+            return {"previousblockhash": None}  # one block deep is enough here
+        result = self._one(method, params or [])
+        return result
+
+
+def FakeRPC(known):
+    """Back-compat helper: every `known` txid is in the mempool."""
+    return FakeNode(mempool=known)
+
+
+def test_resolve_fills_prevouts_and_fee_for_mempool_transactions():
+    node = FakeNode(mempool={"t-confirmed-parent"}, mempool_parents=set())
+    txs, missing = zmq_feed.resolve_transactions(node, ["t-confirmed-parent"])
+    assert missing == 0
+    row = zmq_feed.core_tx_to_row(txs[0], NOW)
+    assert row["input_addresses"] == "bc1qsender1|bc1qsender2"  # from gettxout
+    assert row["fee"] == pytest.approx(0.00002)                 # from getmempoolentry
+
+
+def test_resolve_uses_mempool_parent_when_coin_is_unconfirmed():
+    node = FakeNode(mempool={"child"}, mempool_parents={"child"})
+    txs, _ = zmq_feed.resolve_transactions(node, ["child"])
+    assert zmq_feed.core_tx_to_row(txs[0], NOW)["input_addresses"] == "bc1qsender1|bc1qsender2"
+
+
+def test_resolve_finds_transactions_mined_before_processing():
+    node = FakeNode(mined={"mined-tx"})
+    txs, missing = zmq_feed.resolve_transactions(node, ["mined-tx", "gone"])
+    assert [tx["txid"] for tx in txs] == ["mined-tx"]
+    assert missing == 1  # "gone" is in neither the mempool nor a recent block
+
+
+def test_resolve_batches_requests():
+    txids = [f"t{i}" for i in range(50)]
+    node = FakeNode(mempool=txids)
+    txs, missing = zmq_feed.resolve_transactions(node, txids)
+    assert len(txs) == 50 and missing == 0
+    # transactions, prevouts and fees: one batched request each, not 150+ calls
+    assert node.http_requests == 3
+
+
+def test_fee_is_not_guessed_when_an_input_is_unresolved():
+    tx = core_tx()
+    del tx["fee"]
+    tx["vin"][1].pop("prevout")
+    assert zmq_feed.core_tx_to_row(tx, NOW)["fee"] == 0.0
+
+
+def test_listener_skips_reannouncement_when_mined():
+    listener = zmq_feed.ZMQListener("tcp://127.0.0.1:1")
+    listener._handle(message(1, 0))
+    listener.drain()
+    listener._handle(message(1, 1))  # same txid again, as bitcoind does on mining
+    stats = listener.stats()
+    assert stats["queued"] == 0 and stats["duplicates"] == 1 and stats["missed"] == 0
+    assert "1 repeats skipped" in monitor.format_feed_stats(stats)
 
 
 def test_fetch_from_listener_resolves_counts_and_keeps_remainder():
