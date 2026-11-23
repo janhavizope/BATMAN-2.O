@@ -474,7 +474,7 @@ These come from a review of the changes above.
 
 - [x] **Show performance drift in the app.** The Overview page now shows the transaction model's illicit F1 per test time step (green where it works, red where F1 < 0.5), with a caption that detection collapses after the step-43 dark-market shutdown and the models need retraining when illicit behaviour changes (`get_model_drift()` in `elliptic_source.py`).
 - [ ] **Remove the old parquet copies from git history** (`git lfs migrate import`). **Not done — deliberately deferred.** This rewrites every commit SHA and needs a force-push, which breaks every teammate's clone (everyone must re-clone) and cannot be undone, so it must be agreed as a team first and run as a separate announced step after this work is merged.
-- [ ] **Rebuild the Linux AppImage** from the current code.
+- [x] **Rebuild the Linux AppImage** from the current code. The build is now in the repo (`packaging/`) and runs in CI (`.github/workflows/appimage.yml`), which also launches the AppImage as a smoke test. See [Desktop build (Linux AppImage)](#desktop-build-linux-appimage).
 
 ---
 
@@ -538,14 +538,30 @@ still stands; this section only records what is new and what is in progress.
 
 ---
 
-## Prebuilt desktop build (Linux)
+## Desktop build (Linux AppImage)
 
-A Linux AppImage of the desktop interface is available on [Google Drive](https://drive.google.com/file/d/1XKrpaMlFW2FChI7zCK9j118-lNAXL5-P/view?usp=sharing). It was built before the changes above.
+`BATMAN-x86_64.AppImage` is the desktop app in a single file, with the precomputed scores bundled. It needs no Python install. It is built from the current code by the **appimage** GitHub Actions workflow on Ubuntu 22.04, so it runs on that and newer distributions. The workflow launches the AppImage headless for 30 seconds as a smoke test, and fails if the app crashes or starts without its scores.
+
+**Download:**
+- **Latest build:** open the [appimage workflow runs](https://github.com/janhavizope/BATMAN-2.O/actions/workflows/appimage.yml), pick the newest successful run, and download the `BATMAN-x86_64.AppImage` artifact. You must be signed in to GitHub. Artifacts are kept for 30 days, and you can start a fresh build with **Run workflow**.
+- **Releases:** pushing a version tag (for example `git tag v2.1.0 && git push origin v2.1.0`) builds the AppImage and attaches it to that GitHub Release.
 
 ```bash
 chmod +x BATMAN-x86_64.AppImage
 ./BATMAN-x86_64.AppImage
 ```
+
+**Build it yourself** (Linux x86_64, from the project root):
+
+```bash
+git lfs install && git lfs pull             # the real score files, not LFS pointers
+pip install -r requirements.txt pyinstaller
+bash packaging/build_appimage.sh            # -> dist/BATMAN-x86_64.AppImage
+```
+
+[`packaging/batman.spec`](packaging/batman.spec) is the PyInstaller recipe. It bundles the app with `data/elliptic_plus/`, the evaluation outputs, fonts and images. [`packaging/build_appimage.sh`](packaging/build_appimage.sh) turns that bundle into an AppImage with appimagetool 1.9.1.
+
+The older AppImage on [Google Drive](https://drive.google.com/file/d/1XKrpaMlFW2FChI7zCK9j118-lNAXL5-P/view?usp=sharing) was built before the changes above and is out of date.
 
 ---
 
