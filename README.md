@@ -323,20 +323,7 @@ We report these openly — honesty about what a model *can't* do is part of the 
 
 ---
 
-## Desktop build (Linux AppImage)
 
-`BATMAN-x86_64.AppImage` is the desktop app in a single file with the scores bundled — no Python install needed. It is built from the current code by the **appimage** GitHub Actions workflow on Ubuntu 22.04 (which also launches it headless as a smoke test).
-
-```bash
-# Build it yourself (Linux x86_64, from the project root):
-git lfs install && git lfs pull
-pip install -r requirements.txt pyinstaller
-bash packaging/build_appimage.sh            # -> dist/BATMAN-x86_64.AppImage
-```
-
-[`packaging/batman.spec`](packaging/batman.spec) is the PyInstaller recipe; [`packaging/build_appimage.sh`](packaging/build_appimage.sh) turns the bundle into an AppImage. Latest builds are on the [appimage workflow runs](https://github.com/janhavizope/BATMAN-2.O/actions/workflows/appimage.yml) (sign in to GitHub, pick the newest successful run).
-
----
 
 ## References
 
@@ -353,6 +340,6 @@ More background: [`docs/RESEARCH_ARCHITECTURE_REFERENCES.md`](docs/RESEARCH_ARCH
 
 **Team Lead:** Janhavi Zope
 
-**Members:** Ankita Khokhar · Nutanapushpa Vasarla · Neha More · Lakshmi Sai Lekhana Bavikatta · Keziah Ann Mathew
+**Members:** Ankita Khokhar  · Neha More ·  Keziah Ann Mathew
 
-Symbiosis Skills And Professional University — Smart India Hackathon 2026, Problem ID **SIH26146**
+Symbiosis Skills And Professional University 
