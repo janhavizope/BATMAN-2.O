@@ -116,6 +116,17 @@ def test_overview_counts(scores):
     assert stats["high_risk_entities"] == 2  # High + Critical
 
 
+def test_overview_does_not_load_page_specific_datasets(scores):
+    elliptic_source.get_overview_stats()
+    alerts = elliptic_source.get_alerts_df(include_reasons=False)
+
+    assert not alerts.empty
+    assert "Risk score above threshold" in set(alerts["Main Reason"])
+    assert not {
+        "edges", "timeline", "explanations", "wallet_tx", "wallet_features", "medians"
+    }.intersection(elliptic_source._CACHE)
+
+
 def test_risk_levels_follow_position_among_alerts(scores):
     """Severity is the alert's position in the ranked list, not a cut of the probability range."""
     levels = elliptic_source.get_alerts_df().set_index("Entity ID")["Risk Level"]
@@ -194,6 +205,17 @@ def test_entities_and_explanations(scores):
     # Feature names are prettified for display (same as the Alerts page)
     assert explained["wallet02"]["top_features"][0]["feature"] == "total txs"
     assert "human_reason" in explained["wallet02"]
+
+
+def test_get_entity_loads_only_the_selected_profile(scores):
+    assert elliptic_source.get_entity_ids() == ["wallet02", "wallet08", "wallet03"]
+    assert "entities" not in elliptic_source._CACHE
+
+    entity = elliptic_source.get_entity("wallet02")
+
+    assert entity["entity_id"] == "wallet02"
+    assert "entities" not in elliptic_source._CACHE
+    assert set(elliptic_source._CACHE["entity_profiles"]) == {"wallet02"}
 
 
 def test_graph_data(scores):

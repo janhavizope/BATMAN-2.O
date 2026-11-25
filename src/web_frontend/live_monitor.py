@@ -12,22 +12,20 @@ sweeps, peeling chains, dust, watchlist hits) — not a trained model. Each flag
 is an indicator of a pattern associated with illicit use, not proof of it.
 """
 
-import time
-
 import pandas as pd
 import streamlit as st
 
 from src.config import LIVE_DB
 from src.core.backend.live.live_risk import SIGNALS
 from src.core.backend.live.live_store import LiveStore
-from src.core.backend.live.monitor import FEED_ERRORS, build_zmq_fetch, format_feed_stats, run_cycle
+from src.core.backend.live.monitor import FEED_ERRORS, run_cycle
 from src.core.backend.live.watchlist import load_watchlist
 from src.web_frontend.components import render_header, render_metric_card
 
 LEVEL_COLORS = {"CRITICAL": "#ff4d4d", "HIGH": "#ff8c42", "MEDIUM": "#e0c04d", "LOW": "#4d8b4d"}
 WALLET_COLUMNS = ["address", "risk_score", "risk_level", "max_risk_score",
                   "times_scored", "total_tx_count", "top_reasons", "last_seen"]
-TX_COLUMNS = ["txid", "risk_level", "risk_score", "n_inputs", "n_outputs",
+TX_COLUMNS = ["txid", "risk_level", "risk_score", "supervised_risk", "n_inputs", "n_outputs",
               "total_btc", "fee_btc", "reasons", "fetched_at"]
 
 
@@ -77,6 +75,54 @@ def _level_bar(breakdown: dict) -> None:
     )
 
 
+def _breakdown_cards(breakdown: dict) -> None:
+    """Three big colour-coded cards: NORMAL / SUSPICIOUS / RISKY."""
+    low = breakdown["LOW"]
+    med = breakdown["MEDIUM"]
+    risky = breakdown["HIGH"] + breakdown["CRITICAL"]
+    total = low + med + risky
+    cards = [
+        ("NORMAL", low, "#4d8b4d", "routine payments (LOW)"),
+        ("SUSPICIOUS", med, "#e0c04d", "a pattern worth a look (MEDIUM)"),
+        ("RISKY", risky, "#ff4d4d", "strong signals (HIGH / CRITICAL)"),
+    ]
+    html = "<div style='display:flex; gap:10px; margin-bottom:10px;'>"
+    for label, count, color, sub in cards:
+        pct = (count / total * 100) if total else 0
+        html += (
+            f"<div style='flex:1; background:#0d0808; border:1px solid {color}; "
+            f"border-left:4px solid {color}; border-radius:6px; padding:12px 14px;'>"
+            f"<div style='color:{color}; font-family:\"Orbitron\", sans-serif; font-size:28px; "
+            f"font-weight:bold; line-height:1;'>{count:,}</div>"
+            f"<div style='color:{color}; font-family:\"JetBrains Mono\", monospace; font-size:11px; "
+            f"font-weight:bold; letter-spacing:1px; margin-top:4px;'>{label}</div>"
+            f"<div style='color:#888; font-family:\"JetBrains Mono\", monospace; font-size:10px; "
+            f"margin-top:2px;'>{sub} · {pct:.0f}%</div>"
+            f"</div>"
+        )
+    html += "</div>"
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def _explainability_expander() -> None:
+    """Explain what makes a transaction Normal / Suspicious / Risky."""
+    with st.expander("ℹ️ Why is a transaction Normal, Suspicious, or Risky?", expanded=False):
+        st.markdown(
+            "- **Normal (LOW)** — an ordinary payment with no structural red flags.\n"
+            "- **Suspicious (MEDIUM)** — one laundering-style pattern is present (e.g. a mixer, a "
+            "consolidation sweep, or a peeling step).\n"
+            "- **Risky (HIGH / CRITICAL)** — strong signals: dust spam, a watchlist hit, or several "
+            "patterns at once.\n\n"
+            "Every flag carries its **reason** (the `reasons` column in the tables below). "
+            "The signals the engine checks on each transaction:"
+        )
+        rows = [{"signal": s.name, "what it catches (the explanation shown)": s.reason} for s in SIGNALS]
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+        st.caption("Each signal is computed from the single transaction, needs no training, and is "
+                   "reported only when it raised the score — so a reason always explains the flag. "
+                   "An indicator of a pattern, not proof of illicit activity.")
+
+
 def _signal_breakdown(txs: pd.DataFrame) -> pd.DataFrame:
     """How many transactions triggered each forensic signal, most common first."""
     reasons = txs["reasons"].fillna("")
@@ -94,40 +140,34 @@ def render_live_monitor() -> None:
         "Pulls recent transactions from the live Bitcoin mempool and analyses each one for "
         "structural risk patterns. Flags are explainable indicators (mixer signatures, "
         "consolidation sweeps, peeling chains, dust, watchlist hits), not a verdict of illicit activity. "
-        "Only the chosen feed is contacted (the public API, or your own node); analysis stays on this machine."
+        "The `supervised_risk` column is a learned model's probability (0–100%) that a transaction is "
+        "illicit, trained on real labelled data (ROC-AUC 0.82) — a second opinion next to the forensic "
+        "flags. Nothing but the public API is contacted; analysis stays on this machine."
     )
 
     store = _store()
 
-    c0, c1, c2, c3 = st.columns([1.3, 1.0, 1.0, 1.3])
-    with c0:
-        source = st.radio("Feed source", ["Public API", "My node (ZMQ)"], horizontal=False,
-                          help="Public API: mempool.space. My node: your own Bitcoin Core over ZMQ.")
-    node_feed = source == "My node (ZMQ)"
+    c1, c2, c3 = st.columns([1.0, 1.0, 1.3])
     with c1:
-        max_tx = st.number_input(
-            "Transactions per cycle", min_value=5, max_value=100, value=25, step=5, disabled=node_feed,
-            help="Public API only. The node feed processes every transaction queued since the last cycle.",
-        )
+        max_tx = st.number_input("Transactions per cycle", min_value=5, max_value=100, value=25, step=5)
     with c2:
-        auto = st.toggle("Auto-refresh", value=False, help="Run a cycle automatically on a timer.")
+        auto = st.toggle("Auto-refresh", value=True,
+                         help="On by default: the feed pulls and scores new transactions automatically.")
     with c3:
-        interval = st.slider("Auto-refresh every (seconds)", 10, 120, 30, disabled=not auto)
+        interval = st.slider("Auto-refresh every (seconds)", 5, 120, 20, disabled=not auto)
 
+    @st.fragment(run_every=float(interval) if auto else None)
+    def render_monitor_data() -> None:
+        _render_monitor_data(store, watchlist, int(max_tx), auto)
+
+    render_monitor_data()
+
+
+def _render_monitor_data(store: LiveStore, watchlist: list, max_tx: int, auto: bool) -> None:
     if st.button("Fetch & analyse now", type="primary") or auto:
-        fetch_fn = None
-        if node_feed:
-            try:
-                # Reuses the one persistent listener, so reruns don't drop the subscription
-                fetch_fn = build_zmq_fetch()
-            except FEED_ERRORS as error:
-                st.error(f"Could not connect to your node: {error}. Falling back to the public API "
-                         "is not automatic — start bitcoind with ZMQ enabled (see docs/bitcoin.conf.sample).")
-                st.stop()
         with st.spinner("Fetching live transactions and running forensic analysis ..."):
             try:
-                result = run_cycle(store, max_tx=None if node_feed else int(max_tx),
-                                   watchlist=watchlist, fetch_fn=fetch_fn)
+                result = run_cycle(store, max_tx=max_tx, watchlist=watchlist)
             except FEED_ERRORS as error:
                 st.error(f"Could not reach the live feed: {error}")
                 result = None
@@ -139,10 +179,6 @@ def render_live_monitor() -> None:
                     f"Cycle complete — fetched {result.fetched} transactions, {result.valid} valid, "
                     f"{result.wallets} wallets, {result.flagged_tx} flagged (HIGH/CRITICAL)."
                 )
-            health = format_feed_stats(result.feed_stats)
-            if health:
-                st.caption(health[0].upper() + health[1:] + ". Missed = gaps in the node's message "
-                           "sequence; unresolved = transactions the node no longer had.")
 
     summary = store.summary()
     if summary["total_transactions"] == 0:
@@ -150,18 +186,34 @@ def render_live_monitor() -> None:
         return
 
     st.markdown("---")
-    m1, m2, m3, m4 = st.columns(4)
+    breakdown = store.level_breakdown()
+
+    _section("LIVE TRAFFIC — NORMAL / SUSPICIOUS / RISKY")
+    _breakdown_cards(breakdown)
+
+    m1, m2, m3 = st.columns(3)
     with m1:
         render_metric_card("TRANSACTIONS SEEN", f"{summary['total_transactions']:,}")
     with m2:
-        render_metric_card("FLAGGED (HIGH/CRIT)", f"{summary['flagged_transactions']:,}")
-    with m3:
         render_metric_card("WALLETS TRACKED", f"{summary['total_wallets']:,}")
-    with m4:
+    with m3:
         render_metric_card("CYCLES RUN", f"{summary['cycles']:,}")
 
-    _section("RISK DISTRIBUTION (TRANSACTIONS)")
-    _level_bar(store.level_breakdown())
+    risky = breakdown["HIGH"] + breakdown["CRITICAL"]
+    if risky == 0 and breakdown["MEDIUM"] == 0:
+        st.success("✅ All live traffic is normal right now — this is expected; most Bitcoin activity is "
+                   "ordinary. The monitor will surface mixers, sweeps, dust and watchlist hits the moment "
+                   "they appear.")
+    st.caption(
+        "**Normal** = LOW (routine payments) · **Suspicious** = MEDIUM (a structural pattern worth a look) · "
+        "**Risky** = HIGH/CRITICAL (strong signals: mixers, sweeps, dust, watchlist). "
+        "“Transactions seen” counts *unique* transactions, so re-seeing the same one does not re-count — "
+        "that is why it can hold steady while “cycles run” keeps climbing."
+    )
+    _explainability_expander()
+
+    _section("RISK DISTRIBUTION (DETAIL)")
+    _level_bar(breakdown)
 
     txs = store.transactions(limit=2000)
     _section("PATTERNS DETECTED")
@@ -189,10 +241,6 @@ def render_live_monitor() -> None:
         table["risk_score"] = table["risk_score"].round(1)
         table["max_risk_score"] = table["max_risk_score"].round(1)
         st.dataframe(table, width="stretch", hide_index=True)
-
-    if auto:
-        time.sleep(float(interval))
-        st.rerun()
 
 
 def _round_tx(txs: pd.DataFrame) -> pd.DataFrame:

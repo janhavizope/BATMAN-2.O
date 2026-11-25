@@ -11,6 +11,7 @@ from src.data.elliptic_source import (  # noqa: F401  (re-exported)
     get_activity_timeline,
     get_alerts_df,
     get_entities,
+    get_entity,
     get_entity_ids,
     get_explainability_data,
     get_graph_data,

@@ -8,12 +8,14 @@ written by scripts/score_wallets.py and scripts/score_transactions.py.
 Only wallets / transactions the models did not train on (test and unknown
 splits) are presented as predictions. Entities are wallets; the transaction
 graph comes from the Elliptic transaction flow edge list.
+
+Score and supporting parquet files are loaded on demand so pages only pay the
+I/O and processing cost for the datasets they actually use.
 """
 
 import numpy as np
 import networkx as nx
 import pandas as pd
-from sklearn.metrics import precision_recall_curve
 
 import json
 
@@ -39,6 +41,20 @@ MAX_EXPLAINED = 50
 GRAPH_SEEDS = 40
 GRAPH_ENTITIES = 10
 MAX_TXS_PER_ENTITY = 15
+OVERVIEW_WALLET_COLUMNS = (
+    "address",
+    "time_step",
+    "class",
+    "risk",
+    "split",
+    "total_txs",
+    "transacted_w_address_total",
+    "btc_transacted_total",
+    "num_timesteps_appeared_in",
+    "first_block_appeared_in",
+    "last_block_appeared_in",
+    "lifetime_in_blocks",
+)
 
 _CACHE = {}
 
@@ -93,9 +109,17 @@ def choose_threshold(scores: pd.DataFrame, budget: int, floor: float = 0.0) -> d
     pool = scores.loc[scores["split"] != "train", "risk"]
     threshold = floor
     if val["class"].eq("illicit").any() and val["class"].ne("illicit").any():
-        precision, recall, thresholds = precision_recall_curve(val["class"] == "illicit", val["risk"])
-        f1 = 2 * precision * recall / np.clip(precision + recall, 1e-12, None)
-        threshold = max(threshold, float(thresholds[np.argmax(f1[:-1])]))
+        risks = val["risk"].to_numpy()
+        labels = (val["class"] == "illicit").to_numpy()
+        order = np.argsort(risks)
+        sorted_risks = risks[order]
+        positive_suffix = np.cumsum(labels[order][::-1], dtype=np.int64)[::-1]
+        thresholds = np.unique(risks)
+        starts = np.searchsorted(sorted_risks, thresholds, side="left")
+        predicted = len(risks) - starts
+        true_positive = positive_suffix[starts]
+        f1 = 2 * true_positive / (predicted + labels.sum())
+        threshold = max(threshold, float(thresholds[np.argmax(f1)]))
     if len(pool) > budget:
         threshold = max(threshold, float(pool.nlargest(budget).min()))
 
@@ -177,9 +201,48 @@ def _pretty(feature: str) -> str:
     return feature.replace("_", " ")
 
 
+def _read_wallet_columns() -> list:
+    """Read only the fields needed for summaries and alert ranking."""
+    import pyarrow.parquet as parquet
+
+    available = set(parquet.read_schema(WALLET_SCORES).names)
+    columns = [column for column in OVERVIEW_WALLET_COLUMNS if column in available]
+    secondary = "tx_mean" if "tx_mean" in available else "total_txs"
+    if secondary not in columns:
+        columns.append(secondary)
+    return columns
+
+
+def _load_parquet(key: str, path) -> pd.DataFrame:
+    if key not in _CACHE:
+        _CACHE[key] = pd.read_parquet(path)
+    return _CACHE[key]
+
+
+def _load_wallet_features() -> pd.DataFrame:
+    return _load_parquet("wallet_features", WALLET_SCORES).set_index("address", drop=False)
+
+
+def _wallet_feature_row(address: str) -> pd.Series:
+    wallets = _load_wallet_features()
+    matches = wallets.loc[address]
+    return matches.iloc[0] if isinstance(matches, pd.DataFrame) else matches
+
+
+def _load_medians() -> pd.DataFrame:
+    if "medians" not in _CACHE:
+        wallets = _load_wallet_features()
+        feature_cols = [
+            c for c in wallets.columns
+            if c not in ("address", "time_step", "class", "risk", "split")
+        ]
+        _CACHE["medians"] = wallets[wallets["class"] != "unknown"].groupby("class")[feature_cols].median()
+    return _CACHE["medians"]
+
+
 def _load():
     if "wallets" not in _CACHE:
-        wallets = pd.read_parquet(WALLET_SCORES)
+        wallets = pd.read_parquet(WALLET_SCORES, columns=_read_wallet_columns())
         txs = pd.read_parquet(TX_SCORES)
         _CACHE["wallets"] = wallets
         _CACHE["wallet_threshold"] = choose_threshold(wallets, WALLET_ALERT_BUDGET, MIN_WALLET_THRESHOLD)
@@ -197,25 +260,18 @@ def _load():
         )
         # Severity by position in that ranked list (highest risk first)
         _CACHE["flagged"]["severity"] = _severity_bands(len(_CACHE["flagged"]))
-        feature_cols = [c for c in wallets.columns if c not in ("address", "time_step", "class", "risk", "split")]
-        _CACHE["medians"] = wallets[wallets["class"] != "unknown"].groupby("class")[feature_cols].median()
         _CACHE["txs"] = txs
         _CACHE["txs_eval"] = txs[txs["split"] != "train"].sort_values("risk", ascending=False)
-        _CACHE["edges"] = pd.read_parquet(TX_EDGES)
-        _CACHE["timeline"] = pd.read_parquet(WALLET_TIMELINE)
-        _CACHE["explanations"] = pd.read_parquet(WALLET_EXPLANATIONS)
-        # Optional: which transactions each flagged wallet sent or received
-        if WALLET_TX_EDGES.exists():
-            _CACHE["wallet_tx"] = pd.read_parquet(WALLET_TX_EDGES)
-        else:
-            _CACHE["wallet_tx"] = pd.DataFrame(columns=["address", "txId", "direction"])
     return _CACHE
 
 
 def _wallet_transactions(address: str) -> pd.DataFrame:
     """Transactions a wallet sent or received, with their model risk, newest first."""
     data = _load()
-    links = data["wallet_tx"][data["wallet_tx"]["address"] == address]
+    wallet_tx = _load_parquet("wallet_tx", WALLET_TX_EDGES) if WALLET_TX_EDGES.exists() else pd.DataFrame(
+        columns=["address", "txId", "direction"]
+    )
+    links = wallet_tx[wallet_tx["address"] == address]
     return (
         links.merge(data["txs"][["txId", "time_step", "risk", "class", "total_BTC"]], on="txId", how="left")
         .sort_values(["time_step", "risk"], ascending=False)
@@ -223,13 +279,13 @@ def _wallet_transactions(address: str) -> pd.DataFrame:
 
 
 def _top_contributions(address: str, n: int = 5) -> pd.DataFrame:
-    expl = _load()["explanations"]
+    expl = _load_parquet("explanations", WALLET_EXPLANATIONS)
     rows = expl[(expl["address"] == address) & (expl["contribution"] > 0)]
     return rows.sort_values("contribution", ascending=False).head(n)
 
 
 def _feature_evidence(wallet: pd.Series, contributions: pd.DataFrame) -> list:
-    medians = _load()["medians"]
+    medians = _load_medians()
     evidence = []
     for feature in contributions["feature"]:
         if feature in wallet.index and feature in medians.columns:
@@ -279,9 +335,11 @@ def get_activity_timeline():
     return [_step(t) for t in counts.index], counts.tolist()
 
 
-def _neighbours(column: str, other: str) -> pd.Series:
-    edges = _load()["edges"]
-    return edges.groupby(column)[other].apply(list)
+def _neighbours(column: str, other: str, transaction_ids: set | None = None) -> pd.Series:
+    edges = _load_parquet("edges", TX_EDGES)
+    if transaction_ids is not None:
+        edges = edges[edges[column].isin(transaction_ids)]
+    return edges.groupby(column, sort=False)[other].agg(list)
 
 
 def _describe_links(tx_ids: list) -> str:
@@ -296,8 +354,9 @@ def get_transactions_df():
     if "transactions_df" not in data:
         txs = data["txs_eval"].head(MAX_TRANSACTIONS)
         threshold = _tx_threshold()
-        sources = _neighbours("target", "source")
-        destinations = _neighbours("source", "target")
+        transaction_ids = set(txs["txId"])
+        sources = _neighbours("target", "source", transaction_ids)
+        destinations = _neighbours("source", "target", transaction_ids)
         data["transactions_df"] = pd.DataFrame({
             "Transaction ID": txs["txId"].astype(str),
             "Amount (BTC)": txs["total_BTC"],
@@ -334,18 +393,22 @@ def get_tx_detail(tx_id: str):
     }
 
 
-def get_alerts_df():
+def get_alerts_df(include_reasons: bool = True):
     data = _load()
-    if "alerts_df" not in data:
+    cache_key = "alerts_df" if include_reasons else "alerts_df_without_reasons"
+    if cache_key not in data:
         flagged = data["flagged"]
-        expl = data["explanations"]
-        top_feature = (
-            expl[expl["contribution"] > 0]
-            .sort_values("contribution", ascending=False)
-            .drop_duplicates("address")
-            .set_index("address")["feature"]
-        )
-        data["alerts_df"] = pd.DataFrame({
+        if include_reasons:
+            expl = _load_parquet("explanations", WALLET_EXPLANATIONS)
+            top_feature = (
+                expl[expl["contribution"] > 0]
+                .sort_values("contribution", ascending=False)
+                .drop_duplicates("address")
+                .set_index("address")["feature"]
+            )
+        else:
+            top_feature = pd.Series(dtype=object)
+        data[cache_key] = pd.DataFrame({
             "Rank": range(1, len(flagged) + 1),
             "Entity ID": flagged["address"],
             "Risk Score": (flagged["risk"] * 100).astype(int),
@@ -356,67 +419,126 @@ def get_alerts_df():
             "Full Entity ID": flagged["address"],
             "Timestamp": flagged["time_step"].map(_step),
         })
-    return data["alerts_df"]
+    return data[cache_key]
+
+
+def _build_entity(
+    flagged_wallet: pd.Series,
+    timeline: pd.DataFrame | None = None,
+    contributions: pd.DataFrame | None = None,
+    transactions: pd.DataFrame | None = None,
+) -> dict:
+    addr = flagged_wallet["address"]
+    wallet = _wallet_feature_row(addr).copy()
+    wallet["severity"] = flagged_wallet["severity"]
+    if contributions is None:
+        contributions = _top_contributions(addr)
+    if timeline is None:
+        timeline = _load_parquet("timeline", WALLET_TIMELINE)
+        timeline = timeline[timeline["address"] == addr]
+    steps = timeline[timeline["address"] == addr].sort_values("time_step")
+    if transactions is None:
+        transactions = _wallet_transactions(addr)
+    return {
+        "entity_id": addr,
+        "risk_score": int(wallet["risk"] * 100),
+        "risk_level": wallet["severity"],
+        "anomaly_score": wallet["risk"],
+        "transaction_count": int(wallet["total_txs"]),
+        "counterparty_count": int(wallet["transacted_w_address_total"]),
+        "timeline": [
+            {"timestamp": _step(r["time_step"]), "event": f"Active in time step {int(r['time_step'])}: model risk {r['risk']:.0%}"}
+            for _, r in steps.iterrows()
+        ],
+        "network_associations": [
+            {"type": "First block", "value": _fmt(wallet["first_block_appeared_in"])},
+            {"type": "Last block", "value": _fmt(wallet["last_block_appeared_in"])},
+            {"type": "Lifetime (blocks)", "value": _fmt(wallet["lifetime_in_blocks"])},
+            {"type": "Time steps active", "value": _fmt(wallet["num_timesteps_appeared_in"])},
+            {"type": "BTC transacted", "value": _fmt(wallet["btc_transacted_total"])},
+            {"type": "Ground truth", "value": f"{wallet['class']} ({wallet['split']})"},
+        ],
+        "evidence": _feature_evidence(wallet, contributions),
+        "top_features": [
+            {"feature": _pretty(r["feature"]), "contribution": round(r["contribution"], 3)}
+            for _, r in contributions.iterrows()
+        ],
+        "explanation": _reason(wallet, contributions),
+        "transactions": [
+            {
+                "Transaction ID": str(r["txId"]),
+                "Direction": r["direction"],
+                "Time step": "" if pd.isna(r["time_step"]) else _step(r["time_step"]),
+                "Amount (BTC)": r["total_BTC"],
+                "Risk (%)": None if pd.isna(r["risk"]) else round(r["risk"] * 100, 1),
+                "True Label": r["class"],
+            }
+            for _, r in transactions.iterrows()
+        ],
+    }
+
+
+def get_entity(address: str):
+    data = _load()
+    if "entities" in data:
+        return data["entities"].get(address)
+
+    flagged_wallets = data["flagged"]
+    match = flagged_wallets[flagged_wallets["address"] == address]
+    if match.empty:
+        return None
+
+    profiles = _CACHE.setdefault("entity_profiles", {})
+    if address not in profiles:
+        profiles[address] = _build_entity(match.iloc[0])
+    return profiles[address]
 
 
 def get_entities():
     data = _load()
     if "entities" not in data:
-        timeline = data["timeline"]
-        entities = {}
-        for _, wallet in data["flagged"].head(MAX_ENTITIES).iterrows():
-            addr = wallet["address"]
-            contributions = _top_contributions(addr)
-            steps = timeline[timeline["address"] == addr].sort_values("time_step")
-            entities[addr] = {
-                "entity_id": addr,
-                "risk_score": int(wallet["risk"] * 100),
-                "risk_level": wallet["severity"],
-                "anomaly_score": wallet["risk"],
-                "transaction_count": int(wallet["total_txs"]),
-                "counterparty_count": int(wallet["transacted_w_address_total"]),
-                "timeline": [
-                    {"timestamp": _step(r["time_step"]), "event": f"Active in time step {int(r['time_step'])}: model risk {r['risk']:.0%}"}
-                    for _, r in steps.iterrows()
-                ],
-                "network_associations": [
-                    {"type": "First block", "value": _fmt(wallet["first_block_appeared_in"])},
-                    {"type": "Last block", "value": _fmt(wallet["last_block_appeared_in"])},
-                    {"type": "Lifetime (blocks)", "value": _fmt(wallet["lifetime_in_blocks"])},
-                    {"type": "Time steps active", "value": _fmt(wallet["num_timesteps_appeared_in"])},
-                    {"type": "BTC transacted", "value": _fmt(wallet["btc_transacted_total"])},
-                    {"type": "Ground truth", "value": f"{wallet['class']} ({wallet['split']})"},
-                ],
-                "evidence": _feature_evidence(wallet, contributions),
-                "top_features": [
-                    {"feature": _pretty(r["feature"]), "contribution": round(r["contribution"], 3)}
-                    for _, r in contributions.iterrows()
-                ],
-                "explanation": _reason(wallet, contributions),
-                "transactions": [
-                    {
-                        "Transaction ID": str(r["txId"]),
-                        "Direction": r["direction"],
-                        "Time step": "" if pd.isna(r["time_step"]) else _step(r["time_step"]),
-                        "Amount (BTC)": r["total_BTC"],
-                        "Risk (%)": None if pd.isna(r["risk"]) else round(r["risk"] * 100, 1),
-                        "True Label": r["class"],
-                    }
-                    for _, r in _wallet_transactions(addr).iterrows()
-                ],
-            }
-        data["entities"] = entities
+        flagged = data["flagged"].head(MAX_ENTITIES)
+        timeline = _load_parquet("timeline", WALLET_TIMELINE)
+        timeline_groups = {address: rows for address, rows in timeline.groupby("address", sort=False)}
+        explanations = _load_parquet("explanations", WALLET_EXPLANATIONS)
+        positive = explanations[explanations["contribution"] > 0]
+        contribution_groups = {address: rows for address, rows in positive.groupby("address", sort=False)}
+        wallet_tx = (
+            _load_parquet("wallet_tx", WALLET_TX_EDGES)
+            if WALLET_TX_EDGES.exists()
+            else pd.DataFrame(columns=["address", "txId", "direction"])
+        )
+        transactions = wallet_tx.merge(
+            data["txs"][["txId", "time_step", "risk", "class", "total_BTC"]],
+            on="txId",
+            how="left",
+        ).sort_values(["time_step", "risk"], ascending=False)
+        transaction_groups = {address: rows for address, rows in transactions.groupby("address", sort=False)}
+        data["entities"] = {
+            wallet["address"]: _build_entity(
+                wallet,
+                timeline_groups.get(wallet["address"], pd.DataFrame(columns=timeline.columns)),
+                contribution_groups.get(wallet["address"], pd.DataFrame(columns=explanations.columns)),
+                transaction_groups.get(wallet["address"], pd.DataFrame(columns=transactions.columns)),
+            )
+            for _, wallet in flagged.iterrows()
+        }
     return data["entities"]
 
 
 def get_entity_ids():
-    return list(get_entities().keys())
+    return _load()["flagged"].head(MAX_ENTITIES)["address"].tolist()
 
 
 def _entity_graph(data):
     """Top alerted wallets, the transactions they took part in, and the flows between those."""
     wallets = data["flagged"].head(GRAPH_ENTITIES)
-    links = data["wallet_tx"][data["wallet_tx"]["address"].isin(wallets["address"])]
+    wallet_tx = (
+        _load_parquet("wallet_tx", WALLET_TX_EDGES)
+        if WALLET_TX_EDGES.exists()
+        else pd.DataFrame(columns=["address", "txId", "direction"])
+    )
+    links = wallet_tx[wallet_tx["address"].isin(wallets["address"])]
     links = links.groupby("address").head(MAX_TXS_PER_ENTITY)
     tx_ids = set(links["txId"])
     risk = data["txs"].set_index("txId")["risk"]
@@ -434,14 +556,15 @@ def _entity_graph(data):
         else {"source": str(t), "target": a, "relation": "received"}
         for a, t, d in zip(links["address"], links["txId"], links["direction"])
     ]
-    flows = data["edges"][data["edges"]["source"].isin(tx_ids) & data["edges"]["target"].isin(tx_ids)]
+    edges = _load_parquet("edges", TX_EDGES)
+    flows = edges[edges["source"].isin(tx_ids) & edges["target"].isin(tx_ids)]
     edge_list += [{"source": str(s), "target": str(t), "relation": "funds"} for s, t in zip(flows["source"], flows["target"])]
     return nodes, edge_list
 
 
 def _transaction_graph(data):
     """Transaction-flow subgraph around the highest-risk transactions."""
-    txs, edges = data["txs"], data["edges"]
+    txs, edges = data["txs"], _load_parquet("edges", TX_EDGES)
     seeds = set(data["txs_eval"].head(GRAPH_SEEDS)["txId"])
     sub = edges[edges["source"].isin(seeds) | edges["target"].isin(seeds)]
     risk = txs.set_index("txId")["risk"]
@@ -458,7 +581,12 @@ def get_graph_data():
     """Graph around the top alerted wallets when wallet-transaction links exist,
     otherwise the transaction-flow subgraph around the highest-risk transactions."""
     data = _load()
-    if not data["wallet_tx"].empty:
+    wallet_tx = (
+        _load_parquet("wallet_tx", WALLET_TX_EDGES)
+        if WALLET_TX_EDGES.exists()
+        else pd.DataFrame(columns=["address", "txId", "direction"])
+    )
+    if not wallet_tx.empty:
         nodes, edge_list = _entity_graph(data)
     else:
         nodes, edge_list = _transaction_graph(data)
@@ -486,7 +614,7 @@ def get_graph_data():
 def get_scoreboard():
     """Risk per time step for the highest-risk flagged wallets active in several time steps."""
     data = _load()
-    timeline = data["timeline"]
+    timeline = _load_parquet("timeline", WALLET_TIMELINE)
     active = timeline.groupby("address")["time_step"].nunique()
     flagged = data["flagged"]
     candidates = flagged[flagged["address"].map(active).fillna(0) >= 3].head(6)
@@ -502,7 +630,9 @@ def get_scoreboard():
 def get_explainability_data():
     data = _load()
     explainability = {}
-    for _, wallet in data["flagged"].head(MAX_EXPLAINED).iterrows():
+    for _, flagged_wallet in data["flagged"].head(MAX_EXPLAINED).iterrows():
+        wallet = _wallet_feature_row(flagged_wallet["address"]).copy()
+        wallet["severity"] = flagged_wallet["severity"]
         contributions = _top_contributions(wallet["address"])
         explainability[wallet["address"]] = {
             "anomaly_score": wallet["risk"],

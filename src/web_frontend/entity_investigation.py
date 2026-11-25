@@ -9,22 +9,20 @@ Restores the desktop command-center visual layout:
 - Tabs: Timeline, Network, Evidence, Features, Explanation, Notes
 """
 
-from html import escape
-
 import streamlit as st
 import pandas as pd
 from src.web_frontend.components import render_metric_card, render_dev_badge, render_header
-from src.data.data_manager import get_entities, get_entity_ids
+from src.web_frontend.explainability import render_explanation_detail
+from src.data.data_manager import get_entity, get_entity_ids
 
 
 def render_entity_investigation() -> None:
-    render_header("ENTITY INVESTIGATION")
+    render_header("INVESTIGATE WALLET")
     render_dev_badge()
     from src.web_frontend.components import render_dataset_notice
-    render_dataset_notice()
+    render_dataset_notice(    )
 
     entity_ids = get_entity_ids()
-    entities = get_entities()
 
     if not entity_ids:
         r1c1, r1c2, r1c3 = st.columns(3)
@@ -62,7 +60,7 @@ def render_entity_investigation() -> None:
             label_visibility="collapsed",
         )
 
-    entity = entities.get(entity_id)
+    entity = get_entity(entity_id)
     if entity is None:
         st.warning("Entity not found in live dataset.")
         return
@@ -91,11 +89,17 @@ def render_entity_investigation() -> None:
     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
 
     # --- Tabs ----------------------------------------------------------------
-    tab_timeline, tab_transactions, tab_network, tab_evidence, tab_features, tab_explanation, tab_notes = st.tabs(
-        ["Timeline", "Transactions", "Network", "Evidence", "Features", "Explanation", "Notes"]
+    tab_why, tab_transactions, tab_timeline, tab_network, tab_notes = st.tabs(
+        ["Why flagged", "Transactions", "Timeline", "Network", "Notes"],
+        on_change="rerun",
     )
 
-    with tab_transactions:
+    if tab_why.open:
+        # The rich explanation (verdict, feature contributions, licit/illicit
+        # comparison, reason) — formerly the separate Explainability page.
+        render_explanation_detail(entity_id, entity)
+
+    if tab_transactions.open:
         tx_data = entity.get("transactions", [])
         if tx_data:
             st.caption(f"{len(tx_data):,} transactions this wallet sent or received (Elliptic++ AddrTx / TxAddr).")
@@ -104,55 +108,21 @@ def render_entity_investigation() -> None:
             st.info("No wallet-transaction links available. They are written by scripts/score_wallets.py "
                     "when the Elliptic++ AddrTx / TxAddr edge lists are present.")
 
-    with tab_timeline:
+    if tab_timeline.open:
         timeline_data = entity.get("timeline", [])
         if timeline_data:
-            tdf = pd.DataFrame(timeline_data)
-            st.dataframe(tdf, width="stretch", hide_index=True)
+            st.dataframe(pd.DataFrame(timeline_data), width="stretch", hide_index=True)
         else:
             st.info("No timeline events recorded.")
 
-    with tab_network:
+    if tab_network.open:
         net_data = entity.get("network_associations", [])
         if net_data:
-            ndf = pd.DataFrame(net_data)
-            st.dataframe(ndf, width="stretch", hide_index=True)
+            st.dataframe(pd.DataFrame(net_data), width="stretch", hide_index=True)
         else:
             st.info("No network associations recorded.")
 
-    with tab_evidence:
-        evidence_list = entity.get("evidence", [])
-        if evidence_list:
-            ev_html = "".join(f"<div style='margin-bottom:6px;'>{i}. {escape(str(ev))}</div>" for i, ev in enumerate(evidence_list, 1))
-            st.markdown(
-                f"<div style='background-color:#111118; border:1px solid #2a0a0a; border-radius:4px; padding:12px; "
-                f"font-family:\"JetBrains Mono\", Consolas, monospace; font-size:12px; color:#c0c0c0; line-height:1.6;'>"
-                f"{ev_html}"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-        else:
-            st.info("No evidence records available.")
-
-    with tab_features:
-        features_data = entity.get("top_features", [])
-        if features_data:
-            fdf = pd.DataFrame(features_data)
-            st.dataframe(fdf, width="stretch", hide_index=True)
-        else:
-            st.info("No feature contributions available.")
-
-    with tab_explanation:
-        expl_text = entity.get("explanation", "No explanation available.")
-        st.markdown(
-            f"<div style='background-color:#111118; border:1px solid #2a0a0a; border-radius:4px; padding:12px; "
-            f"font-family:\"JetBrains Mono\", Consolas, monospace; font-size:12px; color:#c0c0c0; line-height:1.6;'>"
-            f"{escape(str(expl_text))}"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-
-    with tab_notes:
+    if tab_notes.open:
         st.text_area(
             "Investigation Notes",
             placeholder="Type investigation notes here...",
