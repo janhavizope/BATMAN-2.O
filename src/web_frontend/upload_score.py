@@ -149,3 +149,31 @@ def render_upload_score() -> None:
     st.dataframe(table.head(500), width="stretch", hide_index=True)
     st.download_button("Download all results (.csv)", table.to_csv(index=False).encode("utf-8"),
                        file_name="batman_wallet_scores.csv", mime="text/csv")
+
+    _supervised_section(transactions)
+
+
+def _supervised_section(transactions) -> None:
+    """Score each uploaded transaction with the live-computable supervised model."""
+    from src.core.backend.live.live_model import supervised_tx_risk, risk_level
+    risk = supervised_tx_risk(transactions)
+    if risk is None:
+        return
+    _section_label("SUPERVISED MODEL — TRANSACTION RISK")
+    st.caption(
+        "A supervised model (trained on real labelled Elliptic transactions, ROC-AUC 0.82 on held-out "
+        "data) rates how likely each transaction is illicit, from its value, fee and input/output counts. "
+        "It ranks transactions — higher is more suspicious. It is a learned second opinion alongside the "
+        "unsupervised wallet score above, and reads best on real on-chain data (synthetic rows with no "
+        "fees may read flat)."
+    )
+    out = pd.DataFrame({
+        "txid": transactions["txid"].values,
+        "supervised risk %": (risk.values * 100).round(1),
+        "level": [risk_level(p) for p in risk.values],
+        "n_inputs": transactions["input_addresses[]"].map(len).values,
+        "n_outputs": transactions["output_addresses[]"].map(len).values,
+    }).sort_values("supervised risk %", ascending=False)
+    flagged = int((risk.values >= 0.5).sum())
+    render_metric_card("TX RATED HIGH-RISK (>=50%)", f"{flagged:,}")
+    st.dataframe(out.head(500), width="stretch", hide_index=True)

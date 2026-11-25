@@ -7,11 +7,12 @@ PORT = 9222
 
 PAGES = [
     ("Overview", "outputs/streamlit_screenshots/page_overview.png"),
+    ("Live Monitor", "outputs/streamlit_screenshots/page_live_monitor.png"),
     ("Transaction Analysis", "outputs/streamlit_screenshots/page_transaction_analysis.png"),
     ("Network Graph", "outputs/streamlit_screenshots/page_network_graph.png"),
-    ("Entity Investigation", "outputs/streamlit_screenshots/page_entity_investigation.png"),
+    ("Investigate Wallet", "outputs/streamlit_screenshots/page_investigate_wallet.png"),
     ("Alerts", "outputs/streamlit_screenshots/page_alerts.png"),
-    ("Explainability", "outputs/streamlit_screenshots/page_explainability.png"),
+    ("Upload & Score", "outputs/streamlit_screenshots/page_upload_score.png"),
 ]
 
 async def capture_all_pages():

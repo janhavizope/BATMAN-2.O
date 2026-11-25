@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS live_transactions (
     block_height INTEGER,
     risk_score   REAL,
     risk_level   TEXT,
-    reasons      TEXT
+    reasons      TEXT,
+    supervised_risk REAL
 );
 CREATE TABLE IF NOT EXISTS live_wallets (
     address        TEXT PRIMARY KEY,
@@ -56,6 +57,14 @@ CREATE TABLE IF NOT EXISTS live_cycles (
     wallets      INTEGER,
     flagged_tx   INTEGER
 );
+CREATE TABLE IF NOT EXISTS live_tx_edges (
+    txid       TEXT NOT NULL,
+    address    TEXT NOT NULL,
+    role       TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    risk_level TEXT,
+    PRIMARY KEY (txid, address, role)
+);
 """
 
 RISK_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
@@ -67,7 +76,15 @@ class LiveStore:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as conn:
             conn.executescript(SCHEMA)
+            self._migrate(conn)
             conn.commit()
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Add columns introduced after a database was first created."""
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(live_transactions)")}
+        if "supervised_risk" not in cols:
+            conn.execute("ALTER TABLE live_transactions ADD COLUMN supervised_risk REAL")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30)
@@ -76,13 +93,24 @@ class LiveStore:
         return conn
 
     def record_cycle(self, tx_risk: pd.DataFrame, wallet_risk: pd.DataFrame,
-                     tx_fetched: int, tx_valid: int) -> None:
-        """Persist one monitoring cycle: scored transactions and wallet risk."""
+                     tx_fetched: int, tx_valid: int, tx_edges: pd.DataFrame | None = None) -> None:
+        """Persist one monitoring cycle: scored transactions and wallet risk.
+
+        `tx_edges` (optional) has columns txid, address, role, risk_level and
+        records which wallets each transaction touched, for the live graph.
+        """
         now = datetime.now(tz=timezone.utc).isoformat()
         flagged = int((tx_risk["risk_level"].isin(["HIGH", "CRITICAL"])).sum()) if not tx_risk.empty else 0
         with closing(self._connect()) as conn:
             self._upsert_transactions(conn, tx_risk, now)
             self._upsert_wallets(conn, wallet_risk, now)
+            if tx_edges is not None and not tx_edges.empty:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO live_tx_edges (txid, address, role, fetched_at, risk_level) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    [(r["txid"], r["address"], r["role"], now, r.get("risk_level", "LOW"))
+                     for _, r in tx_edges.iterrows()],
+                )
             conn.execute(
                 "INSERT OR REPLACE INTO live_cycles "
                 "(cycle_at, tx_fetched, tx_valid, wallets, flagged_tx) VALUES (?, ?, ?, ?, ?)",
@@ -93,6 +121,7 @@ class LiveStore:
     def _upsert_transactions(self, conn: sqlite3.Connection, txs: pd.DataFrame, now: str) -> None:
         rows: List[tuple] = []
         for _, tx in txs.iterrows():
+            sup = tx.get("supervised_risk", None)
             rows.append((
                 tx["txid"], now, str(tx.get("timestamp", "")),
                 int(tx.get("n_inputs", 0) or 0), int(tx.get("n_outputs", 0) or 0),
@@ -100,12 +129,13 @@ class LiveStore:
                 int(tx.get("block_height", 0) or 0),
                 float(tx.get("risk_score", 0) or 0), str(tx.get("risk_level", "LOW")),
                 "; ".join(tx.get("reasons", []) or []),
+                None if sup is None or pd.isna(sup) else float(sup),
             ))
         conn.executemany(
             "INSERT OR IGNORE INTO live_transactions "
             "(txid, fetched_at, timestamp, n_inputs, n_outputs, total_btc, fee_btc, "
-            "block_height, risk_score, risk_level, reasons) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "block_height, risk_score, risk_level, reasons, supervised_risk) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
 
@@ -151,6 +181,10 @@ class LiveStore:
                 "(SELECT address FROM live_wallets ORDER BY max_risk_score DESC LIMIT ?)",
                 (keep_wallets,),
             )
+            conn.execute(
+                "DELETE FROM live_tx_edges WHERE txid NOT IN "
+                "(SELECT DISTINCT txid FROM live_transactions)",
+            )
             conn.commit()
 
     # --- read side, used by the web page ---------------------------------
@@ -173,6 +207,13 @@ class LiveStore:
         params.append(limit)
         with closing(self._connect()) as conn:
             return pd.read_sql_query(query, conn, params=tuple(params))
+
+    def graph_edges(self, limit: int = 300) -> pd.DataFrame:
+        """Recent transaction<->wallet edges, most recent first, for the live graph."""
+        with closing(self._connect()) as conn:
+            return pd.read_sql_query(
+                "SELECT txid, address, role, risk_level FROM live_tx_edges "
+                "ORDER BY fetched_at DESC LIMIT ?", conn, params=(limit,))
 
     def summary(self) -> Dict[str, Any]:
         with closing(self._connect()) as conn:

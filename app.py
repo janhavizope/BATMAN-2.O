@@ -436,10 +436,8 @@ with st.sidebar:
         "> Live Monitor",
         "> Transaction Analysis",
         "> Network Graph",
-        "> Entity Investigation",
+        "> Investigate Wallet",
         "> Alerts",
-        "> Explainability",
-        "> Wallet Scanner",
         "> Upload & Score",
     ]
 
@@ -479,21 +477,13 @@ elif clean_page == "Network Graph":
     from src.web_frontend.network_graph import render_network_graph
     render_network_graph()
 
-elif clean_page == "Entity Investigation":
+elif clean_page == "Investigate Wallet":
     from src.web_frontend.entity_investigation import render_entity_investigation
     render_entity_investigation()
 
 elif clean_page == "Alerts":
     from src.web_frontend.alerts import render_alerts
     render_alerts()
-
-elif clean_page == "Explainability":
-    from src.web_frontend.explainability import render_explainability
-    render_explainability()
-
-elif clean_page == "Wallet Scanner":
-    from src.web_frontend.wallet_scanner import render_wallet_scanner
-    render_wallet_scanner()
 
 elif clean_page == "Upload & Score":
     from src.web_frontend.upload_score import render_upload_score

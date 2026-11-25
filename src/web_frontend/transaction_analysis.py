@@ -15,10 +15,8 @@ from html import escape
 
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
-import networkx as nx
 from src.web_frontend.components import render_metric_card, render_dev_badge, render_header
-from src.data.data_manager import get_transactions_df, get_tx_detail, get_graph_data
+from src.data.data_manager import get_transactions_df, get_tx_detail
 
 
 def render_transaction_analysis() -> None:
@@ -46,77 +44,8 @@ def render_transaction_analysis() -> None:
     if min_amount > 0:
         filtered_df = filtered_df[filtered_df["Amount (BTC)"] >= min_amount]
 
-    # --- Embedded High-Level Attack Graph ------------------------------------
-    with st.expander("NETWORK ATTACK GRAPH PREVIEW", expanded=True):
-        try:
-            nodes, edges, _, _ = get_graph_data()
-            G = nx.Graph()
-            for n in nodes[:40]:
-                G.add_node(n["id"], **n)
-            for e in edges[:50]:
-                if e["source"] in G.nodes and e["target"] in G.nodes:
-                    G.add_edge(e["source"], e["target"])
-
-            if len(G.nodes) > 0:
-                pos = nx.spring_layout(G, seed=42, k=1.8)
-                edge_x, edge_y = [], []
-                for u, v in G.edges():
-                    x0, y0 = pos[u]
-                    x1, y1 = pos[v]
-                    edge_x += [x0, x1, None]
-                    edge_y += [y0, y1, None]
-
-                edge_trace = go.Scatter(
-                    x=edge_x, y=edge_y,
-                    line=dict(width=1, color="rgba(231, 76, 60, 0.3)"),
-                    hoverinfo="none",
-                    mode="lines",
-                )
-
-                node_x, node_y, node_color, node_text = [], [], [], []
-                for n in G.nodes():
-                    x, y = pos[n]
-                    node_x.append(x)
-                    node_y.append(y)
-                    node_text.append(str(n)[:12])
-                    node_color.append("#ffffff")
-
-                node_trace = go.Scatter(
-                    x=node_x, y=node_y,
-                    mode="markers",
-                    marker=dict(size=6, color=node_color, line=dict(color="#8b0000", width=1)),
-                    hovertext=node_text,
-                    hoverinfo="text",
-                )
-
-                fig_graph = go.Figure(
-                    data=[edge_trace, node_trace],
-                    layout=go.Layout(
-                        showlegend=False,
-                        hovermode="closest",
-                        margin=dict(b=10, l=10, r=10, t=10),
-                        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-                        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-                        plot_bgcolor="#080404",
-                        paper_bgcolor="#080404",
-                        height=240,
-                    ),
-                )
-                st.plotly_chart(fig_graph, width="stretch")
-            else:
-                st.markdown(
-                    "<div style='text-align:center; padding:40px; color:#5e1313; font-family:\"Orbitron\", sans-serif; font-size:14px;'>"
-                    "No graph data available"
-                    "</div>",
-                    unsafe_allow_html=True,
-                )
-        except Exception:
-            st.markdown(
-                "<div style='text-align:center; padding:40px; color:#5e1313; font-family:\"Orbitron\", sans-serif; font-size:14px;'>"
-                "No graph data available"
-                "</div>",
-                unsafe_allow_html=True,
-            )
+    # (The network graph lives on the dedicated "Network Graph" page, so it is
+    # not duplicated here.)
 
     # --- Transaction Table ---------------------------------------------------
     st.markdown(
@@ -124,6 +53,11 @@ def render_transaction_analysis() -> None:
         "TRANSACTION FEED"
         "</div>",
         unsafe_allow_html=True,
+    )
+    st.caption(
+        f"Showing the highest-risk transactions first ({len(filtered_df):,} match the filter). "
+        "Risk (%) is the supervised model's probability that a transaction is illicit; most of the "
+        "network is ordinary, so this view is the risky tail, not a random sample."
     )
     st.dataframe(filtered_df.head(1000), width="stretch", hide_index=True)
 
@@ -136,6 +70,9 @@ def render_transaction_analysis() -> None:
         "</div>",
         unsafe_allow_html=True,
     )
+    st.caption("Risk (%) is the supervised model's probability that the transaction is illicit; the "
+               "**Reason** below explains the flag. For the full per-wallet explanation (feature "
+               "contributions, licit vs illicit comparison), open the wallet on the **Investigate Wallet** page.")
 
     tx_ids = filtered_df["Transaction ID"].tolist() if not filtered_df.empty else transactions_df["Transaction ID"].tolist()
     if tx_ids:

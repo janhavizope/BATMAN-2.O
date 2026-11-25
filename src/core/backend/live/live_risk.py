@@ -38,8 +38,8 @@ HIGH_VALUE_BTC = 50.0         # total output value considered large
 ROUND_VALUE_BTC = 1.0         # round-number check only applies above this
 FAN_OUT_SOFT = 10             # outputs beyond this start adding points
 FAN_OUT_HARD = 50             # outputs at/above this get the full weight
-FAN_IN_SOFT = 10
-FAN_IN_HARD = 50
+FAN_IN_SOFT = 6               # consolidation sweeps are suspicious from fewer inputs
+FAN_IN_HARD = 30              # ~30 inputs is already a strong sweep -> full weight
 
 CRITICAL = "CRITICAL"
 HIGH = "HIGH"
@@ -143,9 +143,9 @@ def _self_churn(tx: TxView, _watchlist: Set[str]) -> float:
 SIGNALS: List[Signal] = [
     Signal("watchlist_hit", 100, "address is on the watchlist of known-bad addresses", _watchlist_hit),
     Signal("high_fan_out", 35, "high fan-out: funds split across many outputs (distribution / peeling)", _high_fan_out),
-    Signal("high_fan_in", 30, "high fan-in: many inputs consolidated (sweep / collection)", _high_fan_in),
+    Signal("high_fan_in", 45, "high fan-in: many inputs consolidated (sweep / collection)", _high_fan_in),
     Signal("equal_outputs", 40, "many equal-value outputs (CoinJoin / mixer signature)", _equal_outputs),
-    Signal("peeling_chain", 35, "peeling chain: a tiny remainder output (layering step)", _peeling_chain),
+    Signal("peeling_chain", 42, "peeling chain: a tiny remainder output (layering step)", _peeling_chain),
     Signal("dust_outputs", 20, "dust outputs (spam / address tainting)", _dust_outputs),
     Signal("round_value", 10, "suspiciously round total value", _round_value),
     Signal("high_value", 20, "large total value moved", _high_value),

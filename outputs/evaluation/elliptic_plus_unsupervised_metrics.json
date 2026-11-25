@@ -30,11 +30,11 @@
     "supervised_random_forest": {
       "wallets": 92451,
       "illicit_rate": 0.05288206725724979,
-      "roc_auc": 0.7321405920183002,
-      "precision_at_100": 0.18,
-      "precision_at_500": 0.13,
-      "precision_at_1000": 0.126,
-      "precision_at_5000": 0.1378
+      "roc_auc": 0.9158953887655626,
+      "precision_at_100": 0.99,
+      "precision_at_500": 0.996,
+      "precision_at_1000": 0.992,
+      "precision_at_5000": 0.603
     }
   }
 }

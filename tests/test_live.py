@@ -174,3 +174,24 @@ def test_watchlist_bad_json_is_empty(tmp_path):
     path = tmp_path / "wl.json"
     path.write_text("{not json")
     assert watchlist.load_watchlist(path) == (set(), {})
+
+
+# --- live-computable supervised model ----------------------------------
+
+def test_supervised_live_model_scores_in_range():
+    """The live supervised model returns a probability per transaction, or None
+    (when the committed scores are not available, e.g. Git LFS not pulled)."""
+    from src.core.backend.live import live_model
+
+    frame = TransactionIngestor().normalize_columns(pd.DataFrame([
+        {"txid": "a" * 64, "timestamp": "2024-01-01T00:00:00", "input_addresses": "x",
+         "output_addresses": "y|x", "input_amounts": "1.0", "output_amounts": "0.6|0.3999",
+         "fee": 0.0002}]))
+    clean, _ = TransactionValidator().validate(frame)
+    risk = live_model.supervised_tx_risk(clean)
+    if risk is None:
+        pytest.skip("live supervised model unavailable (tx_scores not pulled)")
+    assert len(risk) == 1
+    assert 0.0 <= float(risk.iloc[0]) <= 1.0
+    assert live_model.risk_level(0.9) == "CRITICAL"
+    assert live_model.risk_level(0.0) == "LOW"
